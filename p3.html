@@ -1,0 +1,243 @@
+<html>
+<head>
+<script>
+function drawTexImage(gl, image_source, width, height, x) {
+  let tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, image_source);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    
+  // Create the program to draw a point sprite.
+  let vs = `attribute vec4 position;
+              void main() {
+                gl_PointSize = 32.0;
+                gl_Position = position;
+              }`;
+
+  let fs = `precision mediump float;
+              uniform sampler2D tex;
+              void main() {
+                gl_FragColor = texture2D(tex, gl_PointCoord);
+                gl_FragColor.a = 1.0;
+              }`;
+  const compileShader = function(gl, vertCode, fragCode) {
+    let vertShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertShader, vertCode);
+    gl.compileShader(vertShader);
+       
+    let fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragShader, fragCode); 
+    gl.compileShader(fragShader);
+    
+    let shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertShader);
+    gl.attachShader(shaderProgram, fragShader);
+    gl.linkProgram(shaderProgram);
+    return shaderProgram;
+  }
+  let program = compileShader(gl, vs, fs);
+  gl.useProgram(program);
+
+  let positionLoc = gl.getAttribLocation(program, 'position');
+  gl.vertexAttrib1f(positionLoc, x, 0);
+
+  let primitiveType = gl.POINTS;
+  let offset = 0;
+  let count = 1;
+  gl.drawArrays(primitiveType, offset, count);
+}
+</script>
+</head>
+
+<body>
+<!-- //////////////////////////// Enabling Support ///////////////////////////// -->
+<h1>Enabling Support</h1>
+<p>
+WebGL P3 Support will be enabled by default in Chrome 104.
+For the moment, it is necessary to download <a href="https://www.google.com/chrome/canary/">Chrome Canary</a>, and to explicitly enable this feature.
+</p>
+<p>
+To do this, navigate to chrome://flags and enable "Experimental Web Platform features".
+</p>
+<p>
+Alternatively, this can be enabled at the command line with the following argument.
+</p>
+<pre>
+  $ /Applications/Google\ Chrome\ Canary.app/Contents/MacOS/Google\ Chrome\ Canary \
+      --enable-experimental-web-platform-features
+</pre>
+
+<!-- //////////////////////////// Detecting Support ///////////////////////////// -->
+<h1>Detecting Support</h1>
+<p>
+To detect support for WebGL, check if the <tt>drawingBufferColorSpace</tt> attribute is present.
+The following example will draw green if the feature is present and red if it is not.
+</p>
+<pre>
+  var gl = document.getElementById('detectExample').getContext('webgl2');
+  if (`drawingBufferColorSpace` in gl) {
+    console.log('Color space support is present');
+    gl.clearColor(0, 1, 0, 1);
+  } else {
+    console.log('Color space support is NOT present');
+    gl.clearColor(0, 1, 0, 1);
+  }
+  gl.clear(gl.COLOR_BUFFER_BIT);
+</pre>
+<p>
+The following canvas runs that example.
+</p>
+<p><canvas id='detectExample' width='32' height='32'></canvas></p>
+<script>
+  const gl = document.getElementById('detectExample').getContext('webgl2');
+  if (`drawingBufferColorSpace` in gl) {
+    console.log('Color space support is present');
+    gl.clearColor(0, 1, 0, 1);
+  } else {
+    console.log('Color space support is NOT present');
+    gl.clearColor(1, 0, 0, 1);
+  }
+  gl.clear(gl.COLOR_BUFFER_BIT);
+</script>
+
+<!-- //////////////////////////// Setting the Drawing Buffer Color Space ///////////////////////////// -->
+<h1>Setting the Drawing Buffer Color Space</h1>
+<p>
+To set the drawing buffer color space, set the aforementioned <tt>drawingBufferColorSpace</tt>.
+The valid values for this to be set to are <tt>'srgb'</tt> and <tt>'display-p3'</tt>.
+If an invalid value is specified, then the value of <tt>drawingBufferColorSpace</tt> will remain unchanged.
+</p>
+<p>
+The following example draws an sRGB WebGL canvas on the left and a Display P3 canvas on the right.
+The left canvas is cleared to sRGB red.
+The center canvas is cleared to Display P3 red.
+The right canvas has an invalid color space set, and remains sRGB.
+Note that the <tt>drawingBufferColorSpace</tt> is set before drawing.
+The contents of the canvas are cleared when it is set.
+</p>
+<pre>
+  const glSRGB = document.getElementById('setExampleSRGB').getContext('webgl2');
+  glSRGB.clearColor(1, 0, 0, 1);
+  glSRGB.clear(glSRGB.COLOR_BUFFER_BIT);
+
+  const glP3 = document.getElementById('setExampleP3').getContext('webgl2');
+  if (`drawingBufferColorSpace` in glP3) {
+    glP3.drawingBufferColorSpace = 'display-p3';
+    console.log(glP3.drawingBufferColorSpace);
+    glP3.clearColor(1, 0, 0, 1);
+    glP3.clear(glP3.COLOR_BUFFER_BIT);
+  }
+
+  const glInvalid = document.getElementById('setExampleInvalid').getContext('webgl2');
+  if (`drawingBufferColorSpace` in glInvalid) {
+    glInvalid.drawingBufferColorSpace = 'not-a-valid-color-space';
+    console.log(glInvalid.drawingBufferColorSpace);
+    glInvalid.clearColor(1, 0, 0, 1);
+    glInvalid.clear(glInvalid.COLOR_BUFFER_BIT);
+  }
+</pre>
+<p>
+  <canvas id='setExampleSRGB' width='32' height='32'></canvas>
+  <canvas id='setExampleP3' width='32' height='32'></canvas>
+  <canvas id='setExampleInvalid' width='32' height='32'></canvas>
+</p>
+<script>
+  const glSRGB = document.getElementById('setExampleSRGB').getContext('webgl2');
+  glSRGB.clearColor(1, 0, 0, 1);
+  glSRGB.clear(glSRGB.COLOR_BUFFER_BIT);
+
+  const glP3 = document.getElementById('setExampleP3').getContext('webgl2');
+  if (`drawingBufferColorSpace` in glP3) {
+    glP3.drawingBufferColorSpace = 'display-p3';
+    console.log(glP3.drawingBufferColorSpace);
+    glP3.clearColor(1, 0, 0, 1);
+    glP3.clear(glP3.COLOR_BUFFER_BIT);
+  }
+
+  const glInvalid = document.getElementById('setExampleInvalid').getContext('webgl2');
+  if (`drawingBufferColorSpace` in glInvalid) {
+    glInvalid.drawingBufferColorSpace = 'not-a-valid-color-space';
+    console.log(glInvalid.drawingBufferColorSpace);
+    glInvalid.clearColor(1, 0, 0, 1);
+    glInvalid.clear(glInvalid.COLOR_BUFFER_BIT);
+  }
+</script>
+
+<!-- //////////////////////////// Uploading Data ///////////////////////////// -->
+<h1>Uploading Data</h1>
+<p>
+Content is imported to a WebGL texture using <tt>texImage2D</tt> and similar functions.
+</p>
+<p>
+If this content is a <tt>TexImageSource</tt> (<tt>ImageBitmap</tt>, <tt>ImageData</tt>, <tt>HTMLImageElement</tt>, <tt>HTMLCanvasElement</tt>, <tt>HTMLVideoElement</tt>, </tt>OffscreenCanvas</tt>, or </tt>VideoFrame</tt>), then the content will be converted to the <tt>unpackColorSpace</tt> during import.
+The one exception to this is if the content is a <tt>HTMLImageElement</tt> and <tt>UNPACK_COLORSPACE_CONVERSION_WEBGL</tt> is set to <tt>NONE</tt>.
+</p>
+<p>
+If this content is an <tt>ArrayBufferView</tt> or a pixel buffer object, then no color conversion is performed.
+</p>
+<p>
+In the following example a <tt>Uint8ClampedArray</tt> is populated with the color <tt>(255, 0, 0, 255)</tt>.
+It is imported directly on the left, no conversion is done, and the result appears as Display P3 red.
+It is imported on the right as an sRGB <tt>ImageData</tt>, converted to Display P3, and the result appears as sRGB red.
+The drawing buffer color space is set the Display P3.
+</p>
+<pre>
+  const drawTexImage = function(gl, image_source, width, height, x) {
+    let tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, image_source);
+    // ... draw tex at the specified x coordinate.
+  }
+
+  const glTexImageExample = document.getElementById('texImageExample').getContext('webgl2');
+  glTexImageExample.drawingBufferColorSpace = 'display-p3';
+  glTexImageExample.unpackColorSpace = 'display-p3';
+
+  // Populate a Uint8ClampedArray with (255, 0, 0, 255).
+  const data = new Uint8ClampedArray(4 * 32 * 32);
+  for (var offset = 0; offset < data.length; offset += 4)
+    data[offset + 0] = data[offset + 3] = 255;
+
+  // Draw it as a texture imported from a Uint8ClampedArray. The data will be
+  // imported directly.
+  drawTexImage(glTexImageExample, data, 32, 32, -0.5);
+
+  // Draw it via an ImageData (which is sRGB unless otherwise specified). The
+  // data will be converted from sRGB to Display P3.
+  const imageData = new ImageData(data, 32, 32);
+  drawTexImage(glTexImageExample, imageData, 32, 32, 0.5);
+</pre>
+<p>
+  <canvas id='texImageExample' width='64' height='32'></canvas>
+</p>
+<script>
+  const glTexImageExample = document.getElementById('texImageExample').getContext('webgl2');
+  glTexImageExample.drawingBufferColorSpace = 'display-p3';
+  glTexImageExample.unpackColorSpace = 'display-p3';
+
+  // Populate a Uint8ClampedArray with (255, 0, 0, 255).
+  const data = new Uint8ClampedArray(4 * 32 * 32);
+  for (var offset = 0; offset < data.length; offset += 4)
+    data[offset + 0] = data[offset + 3] = 255;
+
+  // Draw it as a texture imported from a Uint8ClampedArray. The data will be
+  // imported directly.
+  drawTexImage(glTexImageExample, data, 32, 32, -0.5);
+
+  // Draw it via an ImageData (which is sRGB unless otherwise specified). The
+  // data will be converted from sRGB to Display P3.
+  const imageData = new ImageData(data, 32, 32);
+  drawTexImage(glTexImageExample, imageData, 32, 32, 0.5);
+</script>
+
+<!-- //////////////////////////// Performance Notes  ///////////////////////////// -->
+<h1>Performance Notes</h1>
+<p>
+It is always best to perform color conversion on the GPU.
+If the application has data in its own custom color space, the most performant path is to upload this data without conversion (e.g, via <tt>Uint8ClampedArray</tt> or similar), and then perform color conversion to the <tt>drawingBufferColorSpace</tt> via a shader.
+</p>
+
+</body>
+</html>
