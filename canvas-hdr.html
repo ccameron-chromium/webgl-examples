@@ -1,0 +1,108 @@
+<html>
+<head>
+<script>
+function compileShader(gl, vertCode, fragCode) {
+  let vertShader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vertShader, vertCode);
+  gl.compileShader(vertShader);
+     
+  let fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fragShader, fragCode); 
+  gl.compileShader(fragShader);
+  
+  let shaderProgram = gl.createProgram();
+  gl.attachShader(shaderProgram, vertShader);
+  gl.attachShader(shaderProgram, fragShader);
+  gl.linkProgram(shaderProgram);
+  return shaderProgram;
+}
+
+function render(gl, image) {
+  // Create a texture X.
+  let tex = gl.createTexture();
+
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+    
+  // Create the program to draw a point sprite.
+  let vs = `attribute vec4 position;
+            varying vec2 texcoord;
+            void main() {
+              texcoord.xy = vec2(position.x, position.y);
+              gl_Position = position;
+              gl_Position.xy *= 2.0;
+              gl_Position.xy -= vec2(1.0, 1.0);
+              gl_Position.y *= -1.0;
+            }`;
+
+  let fs = `precision mediump float;
+            uniform sampler2D tex;
+            varying vec2 texcoord;
+            void main() {
+              gl_FragColor = texture2D(tex, texcoord);
+              gl_FragColor.a = 1.0;
+            }`;
+  let program = compileShader(gl, vs, fs);
+  gl.useProgram(program);
+
+  var vertices = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 1,1, 0,1]), gl.STATIC_DRAW);
+
+  var indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
+
+  var positionLocation = gl.getAttribLocation(program, "position");
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(positionLocation);
+
+  gl.uniform1i(gl.getUniformLocation(program, "tex"), 0);
+
+  gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+}
+
+function setImageDataToRGBA(imgData, r, g, b, a) {
+    for (var x = 0; x < imgData.width; ++x) {
+      for (var y = 0; y < imgData.height; ++y) {
+        var offset = 4 * (x + imgData.width * y);
+        imgData.data[offset+0] = r;
+        imgData.data[offset+1] = g;
+        imgData.data[offset+2] = b;
+        imgData.data[offset+3] = a;
+      }
+    }
+}
+
+window.onload = function() {
+  var url = "cosmos-hlg.avif";
+  var image = new Image();
+  image.onload = function() {
+    var element_2d = document.getElementById("Canvas2D");
+    var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-hlg', pixelFormat:'float16'});
+    context_2d.drawImage(image, 0, 0, 640, 320);
+
+    var element_gl = document.getElementById("CanvasGL");
+    gl = element_gl.getContext('webgl2');
+    gl.drawingBufferColorSpace = 'rec2100-hlg';
+    gl.unpackColorSpace = 'rec2100-hlg';
+    render(gl, image);
+    
+  }
+  image.src = url;
+};
+</script>
+</head>
+<body>
+<p> 2D Canvas: rec2100-hlg </p>
+<p> <canvas id="Canvas2D" width="640" height="320"></canvas> </p>
+<p> WebGL 2: rec2100-hlg </p>
+<p> <canvas id="CanvasGL" width="640" height="320"></canvas> </p>
+<p> Image: rec2100-hlg </p>
+<p> <img width="640" height="320" src="cosmos-hlg.avif"> </p>
+</body>
