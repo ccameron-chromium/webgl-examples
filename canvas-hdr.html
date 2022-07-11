@@ -80,29 +80,56 @@ function setImageDataToRGBA(imgData, r, g, b, a) {
 }
 
 window.onload = function() {
-  var url = "cosmos-hlg.avif";
-  var image = new Image();
-  image.onload = function() {
-    var element_2d = document.getElementById("Canvas2D");
-    var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-hlg', pixelFormat:'float16'});
-    context_2d.drawImage(image, 0, 0, 640, 320);
-
-    var element_gl = document.getElementById("CanvasGL");
-    gl = element_gl.getContext('webgl2');
-    gl.drawingBufferColorSpace = 'rec2100-hlg';
-    gl.unpackColorSpace = 'rec2100-hlg';
-    render(gl, image);
-    
+  var image_hlg = new Image();
+  image_hlg.onload = function() {
+    {
+      var element_2d = document.getElementById("Canvas2D-HLG");
+      var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-hlg', pixelFormat:'float16'});
+      context_2d.drawImage(image_hlg, 0, 0, 512, 256);
+    }
+    {
+      var element_gl = document.getElementById("CanvasGL-HLG");
+      gl = element_gl.getContext('webgl2');
+      gl.drawingBufferColorSpace = 'rec2100-hlg';
+      gl.unpackColorSpace = 'rec2100-hlg';
+      render(gl, image_hlg);
+    }
   }
-  image.src = url;
+  image_hlg.src = "cosmos-hlg.avif";
+
+  var image_pq = new Image();
+  image_pq.onload = function() {
+    {
+      var element_2d = document.getElementById("Canvas2D-PQ");
+      var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-pq', pixelFormat:'float16'});
+      context_2d.drawImage(image_pq, 0, 0, 512, 256);
+    }
+    {
+      var element_gl = document.getElementById("CanvasGL-PQ");
+      gl = element_gl.getContext('webgl2');
+      gl.drawingBufferColorSpace = 'rec2100-pq';
+      gl.unpackColorSpace = 'rec2100-pq';
+      render(gl, image_pq);
+    }
+  }
+  image_pq.src = "cosmos-pq.avif";
 };
 </script>
 </head>
 <body>
-<p> 2D Canvas: rec2100-hlg </p>
-<p> <canvas id="Canvas2D" width="640" height="320"></canvas> </p>
-<p> WebGL 2: rec2100-hlg </p>
-<p> <canvas id="CanvasGL" width="640" height="320"></canvas> </p>
-<p> Image: rec2100-hlg </p>
-<p> <img width="640" height="320" src="cosmos-hlg.avif"> </p>
+<p> 2D Canvas: rec2100-hlg (left), rec2100-pq (right)</p>
+<p>
+  <canvas id="Canvas2D-HLG" width="512" height="256"></canvas>
+  <canvas id="Canvas2D-PQ" width="512" height="256"></canvas>
+</p>
+<p> WebGL 2: rec2100-hlg (left), rec2100-pq (right)</p>
+<p>
+  <canvas id="CanvasGL-HLG" width="512" height="256"></canvas>
+  <canvas id="CanvasGL-PQ" width="512" height="256"></canvas>
+</p>
+<p> Image: rec2100-hlg (left), rec2100-pq (right)</p>
+<p>
+  <img width="512" height="256" src="cosmos-hlg.avif">
+  <img width="512" height="256" src="cosmos-pq.avif">
+</p>
 </body>
