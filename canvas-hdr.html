@@ -88,6 +88,7 @@ function drawManualCanvas(redLine) {
     var value = i / 2;
     imageDataFill(image_data, value);
     context.putImageData(image_data, i*image_data.width, 0);
+    context.fillStyle = 'black';
     context.fillText(value.toFixed(2), i*image_data.width, 44);
   }
 
@@ -99,6 +100,8 @@ function drawManualCanvas(redLine) {
     context.lineWidth = 4;
     context.strokeStyle = 'red';
     context.stroke();
+    context.fillStyle = 'red';
+    context.fillText(redLine.toFixed(2), x, 64);
   }
 }
 
@@ -170,6 +173,8 @@ window.onload = function() {
           smpteSt2086Metadata:metadata
           };
       document.getElementById('Canvas2D_PQ').configureHighDynamicRange(configuration);
+      // This doesn't do anything yet ...
+      // document.getElementById('CanvasGL_PQ').configureHighDynamicRange(configuration);
       document.getElementById('MetadataSliderValue').innerText = 'Max luminance: ' + value.toFixed(0) + ' nits.';
   }); 
 };
@@ -205,10 +210,10 @@ The canvas on the left is in color space rec2100-hlg, and the above HLG image fr
 The canvas on the right is in color space rec2100-pq, and the above PQ image from the right is drawn to it.
 </p>
 <p>
-The following slider may be used to adjust the SMPTE ST 2408 maximum luminance value:
+The following slider may be used to adjust the SMPTE ST 2408 maximum luminance value (might not have an effect on all platforms yet):
 </p>
 <p>
-<input id="MetadataSlider" type="range" min="2" max="5" step="0.01" value="4">
+<input id="MetadataSlider" type="range" min="2" max="4" step="0.01" value="4">
 </p>
 <p id="MetadataSliderValue"></p>
 <p>
@@ -216,7 +221,15 @@ The following slider may be used to adjust the SMPTE ST 2408 maximum luminance v
   <canvas id="Canvas2D_PQ" width="512" height="256"></canvas>
 </p>
 <h1>WebGL examples (HLG and PQ, automatically tone mapped)</h1>
-<p> WebGL 2: rec2100-hlg (left), rec2100-pq (right)</p>
+<p>
+The canvas on the left is in color space rec2100-hlg, and the above HLG image from the left is drawn to it.
+</p>
+<p>
+The canvas on the right is in color space rec2100-pq, and the above PQ image from the right is drawn to it.
+</p>
+<p>
+(The PQ canvas is not affected by the above metadata slider, because that code is not written yet).
+</p>
 <p>
   <canvas id="CanvasGL_HLG" width="512" height="256"></canvas>
   <canvas id="CanvasGL_PQ" width="512" height="256"></canvas>
@@ -225,12 +238,12 @@ The following slider may be used to adjust the SMPTE ST 2408 maximum luminance v
 <h1>Manual tone map example</h1>
 <p>This canvas has a float16 backing, and its color space is extended-sRGB.</p>
 <p>This canvas is populated by ImageData with increasing linear light values.</p>
-<p>Press the button below to draw a red line at the screen's maximum brightness.</p>
+<p>Press the button below to draw a red line at the screen's maximum brightness (this should automatically update with screen brightness, but that's not hooked up yet).</p>
 </p>
 <button type="button" id="DetailsButton">Query Screen Details</button>
 <p id="Details"></p>
 <p>
-  <canvas id="Canvas2D_Manual" width="1024" height="256"></canvas>
+  <canvas id="Canvas2D_Manual" width="1056" height="256"></canvas>
 </p>
 
 </body>
