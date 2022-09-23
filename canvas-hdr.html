@@ -1,7 +1,7 @@
 <html>
 <head>
 <script>
-function compileShader(gl, vertCode, fragCode) {
+function webglCompileShader(gl, vertCode, fragCode) {
   let vertShader = gl.createShader(gl.VERTEX_SHADER);
   gl.shaderSource(vertShader, vertCode);
   gl.compileShader(vertShader);
@@ -17,7 +17,7 @@ function compileShader(gl, vertCode, fragCode) {
   return shaderProgram;
 }
 
-function render(gl, image) {
+function webglRender(gl, image) {
   // Create a texture X.
   let tex = gl.createTexture();
 
@@ -47,7 +47,7 @@ function render(gl, image) {
               gl_FragColor = texture2D(tex, texcoord);
               gl_FragColor.a = 1.0;
             }`;
-  let program = compileShader(gl, vs, fs);
+  let program = webglCompileShader(gl, vs, fs);
   gl.useProgram(program);
 
   var vertices = gl.createBuffer();
@@ -67,32 +67,55 @@ function render(gl, image) {
   gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
 }
 
-function setImageDataToRGBA(imgData, r, g, b, a) {
-    for (var x = 0; x < imgData.width; ++x) {
-      for (var y = 0; y < imgData.height; ++y) {
-        var offset = 4 * (x + imgData.width * y);
-        imgData.data[offset+0] = r;
-        imgData.data[offset+1] = g;
-        imgData.data[offset+2] = b;
-        imgData.data[offset+3] = a;
-      }
-    }
+function imageDataFill(image_data, value) {
+  for (var i = 0; i < image_data.width * image_data.height; ++i) {
+    image_data.data[4*i+0] = value;
+    image_data.data[4*i+1] = value;
+    image_data.data[4*i+2] = value;
+    image_data.data[4*i+3] = 1.0;
+  }
+}
+
+function drawManualCanvas(redLine) {
+  var element = document.getElementById("Canvas2D_Manual");
+  var context = element.getContext('2d', {colorSpace:'srgb', pixelFormat:'float16'});
+  context.clearRect(0, 0, element.width, element.height);
+
+  var image_data = new ImageData(32, 32, {colorSpace:'srgb-linear', storageFormat:'float32'});
+
+  context.font = "10px Arial";
+  for (var i = 0; i <= 1024/32; ++i) {
+    var value = i / 2;
+    imageDataFill(image_data, value);
+    context.putImageData(image_data, i*image_data.width, 0);
+    context.fillText(value.toFixed(2), i*image_data.width, 44);
+  }
+
+  if (redLine) {
+    var x = redLine * 64;
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, 50);
+    context.lineWidth = 4;
+    context.strokeStyle = 'red';
+    context.stroke();
+  }
 }
 
 window.onload = function() {
   var image_hlg = new Image();
   image_hlg.onload = function() {
     {
-      var element_2d = document.getElementById("Canvas2D-HLG");
+      var element_2d = document.getElementById("Canvas2D_HLG");
       var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-hlg', pixelFormat:'float16'});
       context_2d.drawImage(image_hlg, 0, 0, 512, 256);
     }
     {
-      var element_gl = document.getElementById("CanvasGL-HLG");
+      var element_gl = document.getElementById("CanvasGL_HLG");
       gl = element_gl.getContext('webgl2');
       gl.drawingBufferColorSpace = 'rec2100-hlg';
       gl.unpackColorSpace = 'rec2100-hlg';
-      render(gl, image_hlg);
+      webglRender(gl, image_hlg);
     }
   }
   image_hlg.src = "cosmos-hlg.avif";
@@ -100,36 +123,114 @@ window.onload = function() {
   var image_pq = new Image();
   image_pq.onload = function() {
     {
-      var element_2d = document.getElementById("Canvas2D-PQ");
+      var element_2d = document.getElementById("Canvas2D_PQ");
       var context_2d = element_2d.getContext('2d', {colorSpace:'rec2100-pq', pixelFormat:'float16'});
       context_2d.drawImage(image_pq, 0, 0, 512, 256);
     }
     {
-      var element_gl = document.getElementById("CanvasGL-PQ");
+      var element_gl = document.getElementById("CanvasGL_PQ");
       gl = element_gl.getContext('webgl2');
       gl.drawingBufferColorSpace = 'rec2100-pq';
       gl.unpackColorSpace = 'rec2100-pq';
-      render(gl, image_pq);
+      webglRender(gl, image_pq);
     }
   }
   image_pq.src = "cosmos-pq.avif";
+
+  drawManualCanvas(null);
+
+  async function screenDetails() {
+    const screens = await window.getScreenDetails();
+    const s = screens.currentScreen;
+    console.log(screens.currentScreen);
+    drawManualCanvas(s.highDynamicRangeHeadroom);
+    document.getElementById('Details').innerText =
+        'HDR headroom: ' + s.highDynamicRangeHeadroom + ', ' +
+        'Gamut: {' + 
+        'r:[' + s.redPrimaryX.toFixed(4) + '], [' + s.redPrimaryY.toFixed(4) + '], ' +
+        'g:[' + s.greenPrimaryX.toFixed(4) + '], [' + s.greenPrimaryY.toFixed(4) + '], ' +
+        'b:[' + s.bluePrimaryX.toFixed(4) + '], [' + s.bluePrimaryY.toFixed(4) + ']}';
+  }
+  DetailsButton.addEventListener('click', screenDetails);
+  MetadataSlider.addEventListener('change', event => {
+      var value = Math.pow(10, MetadataSlider.value)
+      const metadata = {
+          redPrimaryX:0.708,
+          redPrimaryY:0.292,
+          greenPrimaryX:0.170,
+          greenPrimaryY:0.797,
+          bluePrimaryX:0.131,
+          bluePrimaryY:0.046,
+          whitePointX:0.3127,
+          whitePointY:0.3290,
+          minimumLuminance:0,
+          maximumLuminance:value};
+      const configuration = {
+          mode:'default',
+          smpteSt2086Metadata:metadata
+          };
+      document.getElementById('Canvas2D_PQ').configureHighDynamicRange(configuration);
+      document.getElementById('MetadataSliderValue').innerText = 'Max luminance: ' + value.toFixed(0) + ' nits.';
+  }); 
 };
 </script>
 </head>
 <body>
-<p> 2D Canvas: rec2100-hlg (left), rec2100-pq (right)</p>
+<h1>HDR Canvas Example</h1>
 <p>
-  <canvas id="Canvas2D-HLG" width="512" height="256"></canvas>
-  <canvas id="Canvas2D-PQ" width="512" height="256"></canvas>
+This is an experimental feature.
+Use Chrome 108 or higher (Canary as of time of writing).
 </p>
-<p> WebGL 2: rec2100-hlg (left), rec2100-pq (right)</p>
 <p>
-  <canvas id="CanvasGL-HLG" width="512" height="256"></canvas>
-  <canvas id="CanvasGL-PQ" width="512" height="256"></canvas>
+In chrome://flags, set the following:
+<ul>
+<li>Experimental Web Platform features: Enabled</li>
+<li>Out-of-process 2D canvas rasterization: Enabled</li>
+</ul>
 </p>
-<p> Image: rec2100-hlg (left), rec2100-pq (right)</p>
+<h1>Image examples</h1>
+<p>
+Below are two images representing the same scene.
+The image on the left is HLG, and the image on the right is PQ.
 <p>
   <img width="512" height="256" src="cosmos-hlg.avif">
   <img width="512" height="256" src="cosmos-pq.avif">
 </p>
+
+<h1>2D Canvas examples (HLG and PQ, automatically tone mapped)</h1>
+<p>
+The canvas on the left is in color space rec2100-hlg, and the above HLG image from the left is drawn to it.
+</p>
+<p>
+The canvas on the right is in color space rec2100-pq, and the above PQ image from the right is drawn to it.
+</p>
+<p>
+The following slider may be used to adjust the SMPTE ST 2408 maximum luminance value:
+</p>
+<p>
+<input id="MetadataSlider" type="range" min="2" max="5" step="0.01" value="4">
+</p>
+<p id="MetadataSliderValue"></p>
+<p>
+  <canvas id="Canvas2D_HLG" width="512" height="256"></canvas>
+  <canvas id="Canvas2D_PQ" width="512" height="256"></canvas>
+</p>
+<h1>WebGL examples (HLG and PQ, automatically tone mapped)</h1>
+<p> WebGL 2: rec2100-hlg (left), rec2100-pq (right)</p>
+<p>
+  <canvas id="CanvasGL_HLG" width="512" height="256"></canvas>
+  <canvas id="CanvasGL_PQ" width="512" height="256"></canvas>
+</p>
+
+<h1>Manual tone map example</h1>
+<p>This canvas has a float16 backing, and its color space is extended-sRGB.</p>
+<p>This canvas is populated by ImageData with increasing linear light values.</p>
+<p>Press the button below to draw a red line at the screen's maximum brightness.</p>
+</p>
+<button type="button" id="DetailsButton">Query Screen Details</button>
+<p id="Details"></p>
+<p>
+  <canvas id="Canvas2D_Manual" width="1024" height="256"></canvas>
+</p>
+
 </body>
