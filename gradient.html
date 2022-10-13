@@ -1,0 +1,79 @@
+<html>
+<head>
+<script>
+function imageDataFill(image_data, value) {
+  for (var i = 0; i < image_data.width * image_data.height; ++i) {
+    image_data.data[4*i+0] = value;
+    image_data.data[4*i+1] = value;
+    image_data.data[4*i+2] = value;
+    image_data.data[4*i+3] = 1.0;
+  }
+}
+
+function drawManualCanvas(redLine) {
+  var element = document.getElementById("Canvas2D_Manual");
+  var context = element.getContext('2d', {colorSpace:'srgb', pixelFormat:'float16'});
+  context.clearRect(0, 0, element.width, element.height);
+
+  var image_data = new ImageData(32, 32, {colorSpace:'srgb-linear', storageFormat:'float32'});
+
+  context.font = "10px Arial";
+  for (var i = 0; i <= 1024/32; ++i) {
+    var value = i / 2;
+    imageDataFill(image_data, value);
+    context.putImageData(image_data, i*image_data.width, 0);
+    context.fillStyle = 'black';
+    context.fillText(value.toFixed(2), i*image_data.width, 44);
+  }
+
+  if (redLine) {
+    var x = redLine * 64;
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, 50);
+    context.lineWidth = 4;
+    context.strokeStyle = 'red';
+    context.stroke();
+    context.fillStyle = 'red';
+    context.fillText(redLine.toFixed(2), x, 64);
+  }
+}
+
+window.onload = function() {
+  drawManualCanvas(null);
+
+  async function screenDetails() {
+    const screens = await window.getScreenDetails();
+    const s = screens.currentScreen;
+    function updateCurrentScreenInfo(s) {
+      drawManualCanvas(s.highDynamicRangeHeadroom);
+      document.getElementById('Details').innerText =
+          'HDR headroom: ' + s.highDynamicRangeHeadroom + ', ' +
+          'Gamut: {' + 
+          'r:[' + s.redPrimaryX.toFixed(4) + '], [' + s.redPrimaryY.toFixed(4) + '], ' +
+          'g:[' + s.greenPrimaryX.toFixed(4) + '], [' + s.greenPrimaryY.toFixed(4) + '], ' +
+          'b:[' + s.bluePrimaryX.toFixed(4) + '], [' + s.bluePrimaryY.toFixed(4) + ']}';
+    }
+    updateCurrentScreenInfo(s);
+    screens.addEventListener('currentscreenchange', (event) => {
+      updateCurrentScreenInfo(s);
+    });
+  }
+  DetailsButton.addEventListener('click', screenDetails);
+};
+</script>
+</head>
+<body>
+
+<h1>Gradient</h1>
+<p>This canvas has a float16 backing, and its color space is extended-sRGB.</p>
+<p>This canvas is populated by ImageData with increasing linear light values.</p>
+<p>Press the button below to draw a red line at the screen's maximum brightness.</p>
+</p>
+<button type="button" id="DetailsButton">Query Screen Details</button>
+<p id="Details"></p>
+<p>
+  <canvas id="Canvas2D_Manual" width="1056" height="256"></canvas>
+</p>
+
+</body>
