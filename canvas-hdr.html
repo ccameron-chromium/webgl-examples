@@ -145,14 +145,19 @@ window.onload = function() {
   async function screenDetails() {
     const screens = await window.getScreenDetails();
     const s = screens.currentScreen;
-    console.log(screens.currentScreen);
-    drawManualCanvas(s.highDynamicRangeHeadroom);
-    document.getElementById('Details').innerText =
-        'HDR headroom: ' + s.highDynamicRangeHeadroom + ', ' +
-        'Gamut: {' + 
-        'r:[' + s.redPrimaryX.toFixed(4) + '], [' + s.redPrimaryY.toFixed(4) + '], ' +
-        'g:[' + s.greenPrimaryX.toFixed(4) + '], [' + s.greenPrimaryY.toFixed(4) + '], ' +
-        'b:[' + s.bluePrimaryX.toFixed(4) + '], [' + s.bluePrimaryY.toFixed(4) + ']}';
+    function updateCurrentScreenInfo(s) {
+      drawManualCanvas(s.highDynamicRangeHeadroom);
+      document.getElementById('Details').innerText =
+          'HDR headroom: ' + s.highDynamicRangeHeadroom + ', ' +
+          'Gamut: {' + 
+          'r:[' + s.redPrimaryX.toFixed(4) + '], [' + s.redPrimaryY.toFixed(4) + '], ' +
+          'g:[' + s.greenPrimaryX.toFixed(4) + '], [' + s.greenPrimaryY.toFixed(4) + '], ' +
+          'b:[' + s.bluePrimaryX.toFixed(4) + '], [' + s.bluePrimaryY.toFixed(4) + ']}';
+    }
+    updateCurrentScreenInfo(s);
+    screens.addEventListener('currentscreenchange', (event) => {
+      updateCurrentScreenInfo(s);
+    });
   }
   DetailsButton.addEventListener('click', screenDetails);
   MetadataSlider.addEventListener('change', event => {
@@ -238,7 +243,7 @@ The canvas on the right is in color space rec2100-pq, and the above PQ image fro
 <h1>Manual tone map example</h1>
 <p>This canvas has a float16 backing, and its color space is extended-sRGB.</p>
 <p>This canvas is populated by ImageData with increasing linear light values.</p>
-<p>Press the button below to draw a red line at the screen's maximum brightness (this should automatically update with screen brightness, but that's not hooked up yet).</p>
+<p>Press the button below to draw a red line at the screen's maximum brightness.</p>
 </p>
 <button type="button" id="DetailsButton">Query Screen Details</button>
 <p id="Details"></p>
