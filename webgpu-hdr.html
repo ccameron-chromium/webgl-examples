@@ -8,6 +8,7 @@ function onRenderingHdrHeadroomSliderChanged() {
   rendering_hdr_headroom = Math.pow(2.0, RenderingHdrHeadroomSlider.value);
   RenderingHdrHeadroomSliderLabel.innerText = 'Rendering HDR headroom: ' + rendering_hdr_headroom.toFixed(2);
   drawWebGPUCanvas();
+  drawWebGLCanvas();
 }
 
 function onCurrentScreenDetailsChanged() {
@@ -20,6 +21,7 @@ function onCurrentScreenDetailsChanged() {
       'Screen HDR headroom: ' + screen_hdr_headroom.toFixed(2) + '.';
 }
 
+// Clear the canvas to rendering_hdr_headroom using WebGPU.
 async function drawWebGPUCanvas() {
   const canvas = document.getElementById('WebGPUCanvas');
   const adapter = await navigator.gpu?.requestAdapter();
@@ -32,12 +34,12 @@ async function drawWebGPUCanvas() {
   context.configure({
     device: device,
     format: 'rgba16float',
+    colorSpace: 'srgb-linear',
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
     hdrOptions: {mode:'extended'},
   });
 
   let v = rendering_hdr_headroom;
-  console.log('daw!');
   const renderPassDescriptor = {
     colorAttachments: [
       {
@@ -56,6 +58,78 @@ async function drawWebGPUCanvas() {
   device.queue.submit([commandEncoder.finish()]);
 }
 
+// Clear the canvas to rendering_hdr_headroom using WebGL.
+async function drawWebGLCanvas() {
+  const canvas = document.getElementById('WebGLCanvas');
+  const gl = canvas.getContext('webgl2')
+  if (!gl) {
+    console.error("Failed to initialize WebGL");
+    return;
+  }
+  if (`configureHighDynamicRange` in canvas) {
+    canvas.configureHighDynamicRange({ mode:'extended' });
+  }
+
+  let ext = gl.getExtension('EXT_color_buffer_half_float');
+  gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.drawingBufferColorSpace = 'srgb-linear';
+
+  // Create the program to draw a point sprite.
+  let program = null;
+  {
+    let compileShader = function(gl, vertCode, fragCode) {
+      let vertShader = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vertShader, vertCode);
+      gl.compileShader(vertShader);
+      if (!gl.getShaderParameter(vertShader, gl.COMPILE_STATUS))
+        throw new Error(gl.getShaderInfoLog(vertShader));
+         
+      let fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fragShader, fragCode); 
+      gl.compileShader(fragShader);
+      if (!gl.getShaderParameter(fragShader, gl.COMPILE_STATUS))
+        throw new Error(gl.getShaderInfoLog(fragShader));
+      
+      let shaderProgram = gl.createProgram();
+      gl.attachShader(shaderProgram, vertShader);
+      gl.attachShader(shaderProgram, fragShader);
+      gl.linkProgram(shaderProgram);
+      if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
+        throw new Error(gl.getProgramInfoLog(program));
+      return shaderProgram;
+    }
+    let vs = `attribute vec2 position;
+              void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+              }`;
+    let fs = `precision mediump float;
+              uniform float color;
+              void main() {
+                gl_FragColor = vec4(color, color, color, 1.0);
+              }`;
+    program = compileShader(gl, vs, fs);
+  }
+  gl.useProgram(program);
+
+  // Draw using that program.
+  {
+    let vertices = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+
+    let indices = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
+
+    let positionLocation = gl.getAttribLocation(program, 'position');
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(positionLocation);
+
+    gl.uniform1f(gl.getUniformLocation(program, 'color'), rendering_hdr_headroom);
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+  }
+}
+
 function main() {
   // Configure screen information listener.
   ButtonDetails.addEventListener('click', async function screenDetails() {
@@ -72,6 +146,7 @@ function main() {
   RenderingHdrHeadroomSlider.addEventListener('input', onRenderingHdrHeadroomSliderChanged, false);
 
   drawWebGPUCanvas();
+  drawWebGLCanvas();
 }
 </script>
 </head>
@@ -88,8 +163,9 @@ function main() {
 <label id="SetRenderingFromScreenlabel" for="SetRenderingFromScreen">Set from screen:</label>
 <input type="checkbox" id="SetRenderingFromScreen" name="SetRenderingFromScreen" checked onclick="onCurrentScreenDetailsChanged();">
 </p>
-<p><input id="RenderingHdrHeadroomSlider" type="range" min="0" max="5" step="0.1" value="0" list="tickmarks""/></p>
+<p><input id="RenderingHdrHeadroomSlider" type="range" min="-1" max="5" step="0.1" value="0" list="tickmarks""/></p>
 <datalist id="tickmarks">
+  <option value="-1"></option>
   <option value="0"></option>
   <option value="1"></option>
   <option value="2"></option>
@@ -106,5 +182,11 @@ This requires that "Experimental Web Platform features" and "Unsafe WebGPU" be e
 WebGPU canvas that clears to HDR headroom: 
 </p>
 <canvas id="WebGPUCanvas" style="width:32px; height:32px; border:1px solid black;"></canvas>
+
+<h1>WebGL rendering</h1>
+<p>
+WebGL canvas that clears to HDR headroom: 
+</p>
+<canvas id="WebGLCanvas" style="width:32px; height:32px; border:1px solid black;"></canvas>
 
 </html>
