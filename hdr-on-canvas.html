@@ -1,0 +1,67 @@
+<html>
+<head>
+<script>
+window.onload = function() {
+  var image_srgb = new Image();
+  image_srgb.onload = function() {
+    {
+      var element_2d = document.getElementById("SRGBCanvas");
+      var context_2d = element_2d.getContext('2d');
+      element_2d.width = image_srgb.width;
+      element_2d.height = image_srgb.height;
+      context_2d.drawImage(image_srgb, 0, 0, image_srgb.width, image_srgb.height);
+      element_2d.style = 'max-width:80%';
+    }
+  }
+  image_srgb.src = "staircase-srgb.avif";
+
+  var image_hlg = new Image();
+  image_hlg.onload = function() {
+    {
+      var element_2d = document.getElementById("HLGCanvas");
+      var context_2d = element_2d.getContext('2d');
+      element_2d.width = image_hlg.width;
+      element_2d.height = image_hlg.height;
+      context_2d.drawImage(image_hlg, 0, 0, image_hlg.width, image_hlg.height);
+      element_2d.style = 'max-width:80%';
+    }
+  }
+  image_hlg.src = "staircase-hlg.avif";
+
+  var image_pq = new Image();
+  image_pq.onload = function() {
+    {
+      var element_2d = document.getElementById("PQCanvas");
+      var context_2d = element_2d.getContext('2d');
+      element_2d.width = image_pq.width;
+      element_2d.height = image_pq.height;
+      context_2d.drawImage(image_pq, 0, 0, image_pq.width, image_pq.height);
+      element_2d.style = 'max-width:80%';
+    }
+  }
+  image_pq.src = "staircase-pq.avif";
+}
+</script>
+</head>
+<body>
+
+<h1>sRGB</h1>
+<p>As a canvas</p>
+<p><canvas id="SRGBCanvas"></canvas></p>
+<p>As an image</p>
+<p><img src="staircase-srgb.avif" style="max-width:80%;"></p>
+
+<h1>HLG</h1>
+<p>As a canvas</p>
+<p><canvas id="HLGCanvas"></canvas></p>
+<p>As an image</p>
+<p><img src="staircase-hlg.avif" style="max-width:80%;"></p>
+
+<h1>PQ</h1>
+<p>As a canvas</p>
+<p><canvas id="PQCanvas"></canvas></p>
+<p>As an image</p>
+<p><img src="staircase-pq.avif" style="max-width:80%;"></p>
+
+</body>
+</html>
