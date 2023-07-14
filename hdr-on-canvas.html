@@ -62,6 +62,10 @@ function hlgInvOetf(E) {
 }
 
 function hlgOotfGamma(Lw) {
+  if (Lw < 400) {
+    const kappa = 1.111;
+    return 1.2 * Math.pow(kappa, Math.log(Lw / 1000) / Math.log(2))
+  }
   return 1.2 + 0.42 * Math.log(Lw / 1000) / Math.log(10)
 }
 
@@ -191,12 +195,12 @@ window.onload = function() {
       for (let x = 0; x <= 20; x += 1) {
         let x_quant = Math.round(255 * (x / 20)) / 255;
         let x_linear = hlgInvOetf(x_quant);
-        let x_gammaed = Math.pow(x_linear, hlgOotfGamma(140));
+        let x_gammaed = Math.pow(x_linear, hlgOotfGamma(100));
         let x_srgb = linearToSrgb(x_gammaed);
         text += x_srgb.toFixed(2) + ', ';
       }
       text += ']';
-      HLG_Y_TM.innerHTML = 'Manually computed tonemapped values from ITU-R BT.2100 with Lw=140<br>';
+      HLG_Y_TM.innerHTML = 'Manually computed tonemapped values from ITU-R BT.2100 with Lw=100<br>';
       HLG_Y_TM.innerText += text;
     }
   }
