@@ -136,34 +136,56 @@ let rowToString = function(context_2d, y, c) {
   return text;
 }
 
+let drawStuff = function(elementName, image, outPrefix, outElement, resize) {
+  var element_2d = document.getElementById(elementName);
+  var context_2d = element_2d.getContext('2d');
+  if (resize) {
+    element_2d.width = image.width;
+    element_2d.height = image.height;
+  }
+  // Clear the full canvas to red to make sure we don't get stale results.
+  context_2d.fillStyle = 'red';
+  let x = 0;
+  let y = 0;
+  if (!resize) {
+    y = 16;
+  }
+  context_2d.fillRect(x, y, element_2d.width, element_2d.height);
+  context_2d.drawImage(image, x, y, element_2d.width, element_2d.height);
+  if (resize) {
+    element_2d.style = 'max-width:80%';
+  }
+  document.getElementById(outElement).innerHTML = outPrefix + rowToString(context_2d, 32, 0);
+}
+
+let drawVideos = function() {
+  drawStuff('SRGBCanvas', document.getElementById('SRGBVideo'), 'Y(vid) = ', 'SRGB_Y_VID', false);
+  drawStuff('HLGCanvas',
+            document.getElementById('HLGVideo'),
+            'Grey values read back from video drawn to canvas:<br>Y = ',
+            'HLG_Y_VID',
+            false);
+  drawStuff('PQCanvas',
+            document.getElementById('PQVideo'),
+            'Grey values read back from video drawn to canvas:<br>Y = ',
+            'PQ_Y_VID',
+            false);
+}
+
 window.onload = function() {
   var image_srgb = new Image();
   image_srgb.onload = function() {
-    {
-      var element_2d = document.getElementById("SRGBCanvas");
-      var context_2d = element_2d.getContext('2d');
-      element_2d.width = image_srgb.width;
-      element_2d.height = image_srgb.height;
-      context_2d.drawImage(image_srgb, 0, 0, image_srgb.width, image_srgb.height);
-      element_2d.style = 'max-width:80%';
-      SRGB_Y.innerText = 'Y = ' + rowToString(context_2d, 32, 0);
-    }
+    drawStuff('SRGBCanvas', image_srgb, 'Y(img) = ', 'SRGB_Y', true);
   }
   image_srgb.src = "staircase-srgb.avif";
 
   var image_hlg = new Image();
   image_hlg.onload = function() {
-    {
-      var element_2d = document.getElementById("HLGCanvas");
-      var context_2d = element_2d.getContext('2d');
-      element_2d.width = image_hlg.width;
-      element_2d.height = image_hlg.height;
-      context_2d.drawImage(image_hlg, 0, 0, image_hlg.width, image_hlg.height);
-      element_2d.style = 'max-width:80%';
-      HLG_Y.innerHTML = 'Grey values read back from canvas:<br>';
-      HLG_Y.innerHTML += 'Y = ' + rowToString(context_2d, 32, 0);
-    }
-
+    drawStuff('HLGCanvas',
+              image_hlg,
+              'Grey values read back from image drawn to canvas:<br>Y = ',
+              'HLG_Y',
+              true);
     {
       let text = 'Y\' = [';
       for (let x = 0; x <= 20; x += 1) {
@@ -228,32 +250,50 @@ window.onload = function() {
     }
   }
   image_pq.src = "staircase-pq.avif";
+
+  VideoButton.addEventListener('click', drawVideos);
+  SRGBVideo.controls=false;
+  HLGVideo.controls=false;
+  PQVideo.controls=false;
 }
 </script>
 </head>
 <body>
-
+<p><button type="button" id="VideoButton">Draw the video to the canvas (shifted down by 16 pixels)</button></p>
 <h1>sRGB</h1>
 <p>As a canvas</p>
 <p><canvas id="SRGBCanvas"></canvas></p>
 <p>As an image</p>
 <p><img src="staircase-srgb.avif" style="max-width:80%;"></p>
+<p>As a video</p>
+<p><video id="SRGBVideo", src="staircase-srgb.mp4" style="max-width:80%;"></p>
 <p id="SRGB_Y"></p>
+<p id="SRGB_Y_VID"></p>
 
 <h1>HLG</h1>
 <p>As a canvas</p>
 <p><canvas id="HLGCanvas"></canvas></p>
+<p id="HLGText"></p>
+<p id="HLGTextVid"></p>
 <p>As an image</p>
 <p><img src="staircase-hlg.avif" style="max-width:80%;"></p>
+<p>As a video</p>
+<p><video id="HLGVideo", src="staircase-hlg.mp4" style="max-width:80%;"></p>
 <p id="HLG_Y"></p>
+<p id="HLG_Y_VID"></p>
 <p id="HLG_Y_TM"></p>
 
 <h1>PQ</h1>
 <p>As a canvas</p>
 <p><canvas id="PQCanvas"></canvas></p>
+<p id="PQText"></p>
+<p id="PQTextVid"></p>
 <p>As an image</p>
 <p><img src="staircase-pq.avif" style="max-width:80%;"></p>
+<p>As a video</p>
+<p><video id="PQVideo", src="staircase-pq.mp4" style="max-width:80%;"></p>
 <p id="PQ_Y"></p>
+<p id="PQ_Y_VID"></p>
 <p id="PQ_Y_TM"></p>
 <p id="PQ_R"></p>
 <p id="PQ_R_TM"></p>
