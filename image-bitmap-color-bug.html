@@ -1,0 +1,51 @@
+<html>
+<head>
+<script>
+window.onload = function() {
+  var url = "https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png";
+  var image = new Image();
+  image.onload = function() {
+    // An sRGB canvas shouldn't show the logo.
+    var ctx;
+
+    // A uint8 P3 canvas should show the logo, but it doesn't! It reports that
+    // it's P3, but something is going wrong.
+    ctx = document.getElementById("CanvasP3").getContext(
+        "2d", {colorSpace: 'display-p3'});
+
+    Promise.all([
+      createImageBitmap(image, 0, 0, 1024, 1024, {colorSpaceConversion:"none"}),
+      createImageBitmap(image, 0, 0, 1024, 1024, {colorSpaceConversion:"default"}),
+    ]).then(function(sprites) {
+      ctx.drawImage(sprites[0], 0, 0, 256, 256);
+      ctx.drawImage(sprites[1], 256, 256, 256, 256);
+    });
+
+    ctx.drawImage(image, 512, 512, 256, 256);
+    console.log(ctx.getContextAttributes().colorSpace);
+    console.log(ctx.getContextAttributes().pixelFormat);
+  }
+  image.src = url;
+};
+</script>
+</head>
+<body>
+<p>
+Top-left: drawing a P3 image into a P3 canvas via createImageBitmap, having specified colorSpaceConversion:none.
+The result shows all of the pixels, but maxes out at sRGB red.
+This behavior is correct in Chrome.
+</p>
+<p>
+Middle: drawing a P3 image into a P3 canvas via createImageBitmap.
+The result is clamped to the sRGB gamut.
+There is currently no way to create an ImageBitmap that is not clamped to sRGB.
+This is bad. 
+</p>
+<p>
+Bottom-right: drawing a P3 image into a P3 canvas via Image.
+The result is correct.
+This is good.
+</p>
+<p> <canvas id="CanvasP3" width="768" height="768"></canvas> </p>
+</body>
+</html>
