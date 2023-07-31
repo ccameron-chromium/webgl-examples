@@ -2,7 +2,7 @@
 <head>
 <script>
 window.onload = function() {
-  var url = "https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png";
+  var url = "Webkit-logo-P3.png";
   var image = new Image();
   image.onload = function() {
     var ctxA = document.getElementById("CanvasA").getContext("2d", {colorSpace: 'display-p3'});
@@ -11,9 +11,9 @@ window.onload = function() {
     var ctxD = document.getElementById("CanvasD").getContext("2d", {colorSpace: 'display-p3'});
 
     Promise.all([
-      createImageBitmap(image, 0, 0, image.width, image.height),
-      createImageBitmap(image, 0, 0, image.width, image.height, {colorSpaceConversion:"none"}),
-      createImageBitmap(image, 0, 0, image.width, image.height, {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}),
+      createImageBitmap(image),
+      createImageBitmap(image, {colorSpaceConversion:"none"}),
+      createImageBitmap(image, {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}),
     ]).then(function(sprites) {
       ctxB.drawImage(sprites[0], 0, 0, 128, 128);
       ctxC.drawImage(sprites[1], 0, 0, 128, 128);
@@ -23,6 +23,21 @@ window.onload = function() {
     ctxA.drawImage(image, 0, 0, 128, 128);
   }
   image.src = url;
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", url);
+  xhr.responseType = 'blob';
+  xhr.send();
+  xhr.onload = function() {
+    createImageBitmap(xhr.response).then((value) => {
+      var ctx = document.getElementById("CanvasE").getContext("2d", {colorSpace: 'display-p3'});
+      ctx.drawImage(value, 0, 0, 128, 128);
+    });
+    createImageBitmap(xhr.response, {colorSpaceConversion:"none"}).then((value) => {
+      var ctx = document.getElementById("CanvasF").getContext("2d", {colorSpace: 'display-p3'});
+      ctx.drawImage(value, 0, 0, 128, 128);
+    });
+  };
 };
 </script>
 </head>
@@ -31,19 +46,19 @@ window.onload = function() {
 <table>
 <tr>
 <td width="150"> <img width="128" height="128" src="https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png"> </td>
-<td> A P3 image as an image element. </td>
+<td> A P3 Image as an HTMLImageElement. </td>
 </tr>
 
 <tr>
 <td width="150"> <canvas id="CanvasA" width="128" height="128"></canvas> </td>
 <td>
-  Drawing that same P3 image to a P3 canvas.
+  Drawing that same HTMLImageElement to a P3 canvas.
   <ul>
   <li>
   On Chrome, the image is appears correctly (is not clamped to the sRGB gamut).
   </li>
   <li>
-  On Safari, the image is appears correctly (is not clamped to the sRGB gamut).
+  On Safari, the image is unaffected by the flag.
   </li>
   </ul>
 </td>
@@ -52,13 +67,13 @@ window.onload = function() {
 <tr>
 <td width="150"> <canvas id="CanvasB" width="128" height="128"></canvas> </td>
 <td>
-  Drawing that same P3 image to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
+  Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
   <ul>
   <li>
   On Chrome, the image gets clamped to the sRGB gamut, and so the image appears as solid red.
   </li>
   <li>
-  On Safari, the image is appears correctly (is not clamped to the sRGB gamut).
+  On Safari, the image is unaffected by the flag.
   </li>
   </ul>
 </td>
@@ -67,7 +82,7 @@ window.onload = function() {
 <tr>
 <td width="150"> <canvas id="CanvasC" width="128" height="128"></canvas> </td>
 <td>
-  Drawing that same P3 image to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
+  Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
   <li>
   On Chrome, the image is unaffected by the flag.
@@ -82,7 +97,37 @@ window.onload = function() {
 <tr>
 <td width="150"> <canvas id="CanvasD" width="128" height="128"></canvas> </td>
 <td>
-  Drawing that same P3 image to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}.
+  Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}.
+  <ul>
+  <li>
+  On Chrome, the image's color space (ICC profile) is ignored, its pixels are interpreted as being sRGB, and so the image appears unsaturated.
+  </li>
+  <li>
+  On Safari, the image is unaffected by the flag.
+  </li>
+  </ul>
+</td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasE" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
+  <ul>
+  <li>
+  On Chrome, the image gets clamped to the sRGB gamut, and so the image appears as solid red.
+  </li>
+  <li>
+  On Safari, the image is unaffected by the flag.
+  </li>
+  </ul>
+</td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasF" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
   <li>
   On Chrome, the image's color space (ICC profile) is ignored, the pixels are interpreted as being sRGB, and so the image appears solid red.
