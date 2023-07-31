@@ -1,15 +1,8 @@
 <html>
 <head>
 <script>
-async function doDrawImage(elementId, image) {
-  let element_2d = document.getElementById(elementId);
-  let ctx = element_2d.getContext("2d", {colorSpace: 'display-p3'});
-  ctx.drawImage(image, 0, 0, 128, 128);
-
-  let element_gl = document.getElementById(elementId + "_GL");
-  if (!element_gl)
-    return;
-
+async function doDrawGL(elementId, image) {
+  let element_gl = document.getElementById(elementId);
 
   let gl = element_gl.getContext("webgl2");
   if (!('unpackColorSpace' in gl)) {
@@ -82,8 +75,190 @@ async function doDrawImage(elementId, image) {
   }
 
   gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
 
+async function doDraw2D(elementId, image) {
+  let element_2d = document.getElementById(elementId);
+  let ctx = element_2d.getContext("2d", {colorSpace: 'display-p3'});
+  ctx.drawImage(image, 0, 0, 128, 128);
+}
 
+async function doDrawGPU(elementId, imageBitmap) {
+  const canvas = document.getElementById(elementId);
+  if (!canvas)
+    return;
+
+  const adapter = await navigator.gpu?.requestAdapter();
+  const device = await adapter?.requestDevice();
+  const context = canvas.getContext('webgpu')
+  if (!device || !context) {
+    console.error("Failed to initialize WebGPU");
+    return;
+  }
+
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const presentationSize = [
+    canvas.clientWidth * devicePixelRatio,
+    canvas.clientHeight * devicePixelRatio,
+  ];
+  const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+  context.configure({
+    device,
+    format: presentationFormat,
+    alphaMode: "opaque",
+    colorSpace: "display-p3",
+  });
+
+  // Each vertex has a position and a color packed in memory in X Y Z W R G B A order
+  const vertices = new Float32Array([
+    -1.0,  1.0, 0, 1, 0, 1, 0, 1,
+     1.0,  1.0, 0, 1, 1, 0, 0, 1,
+     1.0, -1.0, 0, 1, 0, 0, 1, 1,
+    -1.0, -1.0, 0, 1, 1, 0, 0, 1,
+    -1.0,  1.0, 0, 1, 0, 1, 0, 1,
+     1.0, -1.0, 0, 1, 0, 0, 1, 1,
+  ]);
+
+  const vertexBuffer = device.createBuffer({
+    size: vertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+  vertexBuffer.unmap();
+
+  const vertexBuffersDescriptors = [
+    {
+      attributes: [
+        {
+          shaderLocation: 0,
+          offset: 0,
+          format: "float32x4",
+        },
+        {
+          shaderLocation: 1,
+          offset: 16,
+          format: "float32x4",
+        },
+      ],
+      arrayStride: 32,
+      stepMode: "vertex",
+    },
+  ];
+
+  const shaderModule = device.createShaderModule({
+    code: `
+              @group(0) @binding(0) var mySampler: sampler;
+              @group(0) @binding(1) var myTexture: texture_2d<f32>;
+              struct VertexOut {
+                  @builtin(position) position : vec4<f32>,
+                  @location(0) color : vec2<f32>,
+              };
+              @vertex
+              fn vertex_main(@location(0) position: vec4<f32>,
+                          @location(1) color: vec2<f32>) -> VertexOut
+              {
+                  var output : VertexOut;
+                  output.position = position;
+                  output.color.r = 0.5 * (position.x + 1);
+                  output.color.g = 0.5 * (position.y + 1);
+                  return output;
+              } 
+              @fragment
+              fn fragment_main(fragData: VertexOut) -> @location(0) vec4<f32>
+              {
+                  return textureSample(myTexture, mySampler, fragData.color);
+              } 
+          `,
+  });
+
+  let texture = device.createTexture({
+    size: [imageBitmap.width, imageBitmap.height, 1],
+    format: 'rgba8unorm',
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+
+  const sampler = device.createSampler({
+    magFilter: 'linear',
+    minFilter: 'linear',
+  });
+
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertex_main",
+      buffers: vertexBuffersDescriptors,
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragment_main",
+      targets: [
+        {
+          format: presentationFormat,
+        },
+      ],
+    },
+    primitive: {
+      topology: "triangle-list",
+    },
+  });
+
+  const uniformBindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      {
+        binding: 0,
+        resource: sampler,
+      },
+      {
+        binding: 1,
+        resource: texture.createView(),
+      },
+    ],
+  });
+
+  const renderPassDescriptor = {
+    colorAttachments: [
+      {
+        clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+        loadOp: "clear",
+        storeOp: "store",
+      },
+    ],
+  };
+
+  renderPassDescriptor.colorAttachments[0].view = context
+    .getCurrentTexture()
+    .createView();
+  const commandEncoder = device.createCommandEncoder();
+  const passEncoder =
+    commandEncoder.beginRenderPass(renderPassDescriptor);
+
+  passEncoder.setPipeline(pipeline);
+  passEncoder.setBindGroup(0, uniformBindGroup);
+  passEncoder.setVertexBuffer(0, vertexBuffer);
+  passEncoder.draw(6);
+  passEncoder.end();
+
+  device.queue.copyExternalImageToTexture(
+    { source:      imageBitmap },
+    { texture:     texture,
+      colorSpace:"display-p3" },
+    [imageBitmap.width, imageBitmap.height]
+  );
+
+  device.queue.submit([commandEncoder.finish()]);
+}
+
+async function doDrawImage(elementId, image) {
+  doDraw2D(elementId, image);
+  doDrawGL(elementId + "_GL", image);
+  doDrawGPU(elementId + "_GPU", image);
 }
 
 window.onload = function() {
@@ -127,6 +302,7 @@ window.onload = function() {
 <tr>
 <td width="150"> <img width="128" height="128" src="red-p3-on-srgb-in-2020.png"> </td>
 <td width="150"> <img width="128" height="128" src="red-p3-on-srgb-in-2020.png"> </td>
+<td width="150"> <img width="128" height="128" src="red-p3-on-srgb-in-2020.png"> </td>
 <td>
 An image as an HTMLImageElement. 
 
@@ -141,11 +317,13 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> 2D </td>
 <td width="150"> WebGL2 </td>
+<td width="150"> WebGPU </td>
 </tr>
 
 <tr>
 <td width="150"> <canvas id="CanvasA" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasA_GL" width="128" height="128"></canvas> </td>
+<td width="150"> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas.
   <ul>
@@ -163,6 +341,7 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> <canvas id="CanvasB" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasB_GL" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasB_GPU" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
   <ul>
@@ -179,6 +358,7 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> <canvas id="CanvasC" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasC_GL" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasC_GPU" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
@@ -195,6 +375,7 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> <canvas id="CanvasD" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasD_GL" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasD_GPU" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}.
   <ul>
@@ -211,6 +392,7 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> <canvas id="CanvasE" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasE_GL" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasE_GPU" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
   <ul>
@@ -227,6 +409,7 @@ An image as an HTMLImageElement.
 <tr>
 <td width="150"> <canvas id="CanvasF" width="128" height="128"></canvas> </td>
 <td width="150"> <canvas id="CanvasF_GL" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasF_GPU" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
