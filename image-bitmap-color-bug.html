@@ -1,26 +1,107 @@
 <html>
 <head>
 <script>
+async function doDrawImage(elementId, image) {
+  let element_2d = document.getElementById(elementId);
+  let ctx = element_2d.getContext("2d", {colorSpace: 'display-p3'});
+  ctx.drawImage(image, 0, 0, 128, 128);
+
+  let element_gl = document.getElementById(elementId + "_GL");
+  if (!element_gl)
+    return;
+
+
+  let gl = element_gl.getContext("webgl2");
+  if (!('unpackColorSpace' in gl)) {
+    // Safari doesn't support unpackColorSpace yet.
+    // ... I guess just go for it ...
+  }
+
+  gl.unpackColorSpace = 'display-p3';
+  gl.drawingBufferColorSpace = 'display-p3';
+
+  let tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA, image.width, image.height, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, image);
+  gl.texParameteri(
+      gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(
+      gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(
+      gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    
+  const vs = `attribute vec2 a_position;
+              varying vec2 v_texcoord;
+              void main() {
+                v_texcoord = (a_position + vec2(1.0, 1.0)) * 0.5;
+                v_texcoord.y = 1.0 - v_texcoord.y;
+                gl_Position = vec4(a_position, 0.0, 1.0);
+              }`;
+
+  const fs = `precision mediump float;
+              uniform sampler2D tex;
+              varying vec2 v_texcoord;
+
+
+              void main() {
+                gl_FragColor = texture2D(tex, v_texcoord);
+              }`;
+
+  let compileShader = function(vertCode, fragCode) {
+    let vertShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertShader, vertCode);
+    gl.compileShader(vertShader);
+       
+    let fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragShader, fragCode); 
+    gl.compileShader(fragShader);
+    
+    let shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertShader);
+    gl.attachShader(shaderProgram, fragShader);
+    gl.linkProgram(shaderProgram);
+    return shaderProgram;
+  }
+  
+  let program = compileShader(vs, fs);
+  gl.useProgram(program);
+
+  {
+    const vertices = [-1.0, -1.0, -1.0,  1.0, 1.0,  1.0,
+                       1.0,  1.0, 1.0, -1.0, -1.0, -1.0];
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices),
+                       gl.STATIC_DRAW);
+
+    const attribLocation = gl.getAttribLocation(program, 'a_position');
+    gl.enableVertexAttribArray(attribLocation);
+    gl.vertexAttribPointer(attribLocation, 2, gl.FLOAT, false, 0, 0);
+  }
+
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+
+}
+
 window.onload = function() {
-  var url = "Webkit-logo-P3.png";
+  var url = "red-p3-on-srgb-in-2020.png";
   var image = new Image();
   image.onload = function() {
-    var ctxA = document.getElementById("CanvasA").getContext("2d", {colorSpace: 'display-p3'});
-    var ctxB = document.getElementById("CanvasB").getContext("2d", {colorSpace: 'display-p3'});
-    var ctxC = document.getElementById("CanvasC").getContext("2d", {colorSpace: 'display-p3'});
-    var ctxD = document.getElementById("CanvasD").getContext("2d", {colorSpace: 'display-p3'});
+    doDrawImage("CanvasA", image);
 
-    Promise.all([
-      createImageBitmap(image),
-      createImageBitmap(image, {colorSpaceConversion:"none"}),
-      createImageBitmap(image, {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}),
-    ]).then(function(sprites) {
-      ctxB.drawImage(sprites[0], 0, 0, 128, 128);
-      ctxC.drawImage(sprites[1], 0, 0, 128, 128);
-      ctxD.drawImage(sprites[2], 0, 0, 128, 128);
+    createImageBitmap(image).then((imageBitmap) => {
+      doDrawImage("CanvasB", imageBitmap);
     });
 
-    ctxA.drawImage(image, 0, 0, 128, 128);
+    createImageBitmap(image, {colorSpaceConversion:"none"}).then((imageBitmap) => {
+      doDrawImage("CanvasC", imageBitmap);
+    });
+
+    createImageBitmap(image, {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}).then((imageBitmap) => {
+      doDrawImage("CanvasD", imageBitmap);
+    });
   }
   image.src = url;
 
@@ -29,13 +110,11 @@ window.onload = function() {
   xhr.responseType = 'blob';
   xhr.send();
   xhr.onload = function() {
-    createImageBitmap(xhr.response).then((value) => {
-      var ctx = document.getElementById("CanvasE").getContext("2d", {colorSpace: 'display-p3'});
-      ctx.drawImage(value, 0, 0, 128, 128);
+    createImageBitmap(xhr.response).then((imageBitmap) => {
+      doDrawImage("CanvasE", imageBitmap);
     });
-    createImageBitmap(xhr.response, {colorSpaceConversion:"none"}).then((value) => {
-      var ctx = document.getElementById("CanvasF").getContext("2d", {colorSpace: 'display-p3'});
-      ctx.drawImage(value, 0, 0, 128, 128);
+    createImageBitmap(xhr.response, {colorSpaceConversion:"none"}).then((imageBitmap) => {
+      doDrawImage("CanvasF", imageBitmap);
     });
   };
 };
@@ -45,12 +124,27 @@ window.onload = function() {
 
 <table>
 <tr>
-<td width="150"> <img width="128" height="128" src="https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png"> </td>
-<td> A P3 Image as an HTMLImageElement. </td>
+<td width="150"> <img width="128" height="128" src="red-p3-on-srgb-in-2020.png"> </td>
+<td width="150"> <img width="128" height="128" src="red-p3-on-srgb-in-2020.png"> </td>
+<td>
+An image as an HTMLImageElement. 
+
+<ul>
+<li> The image background is color(srgb 1 0 0), with a square that is color(display-p3 1 0 0) in the foreground. </li>
+<li> The image's color space is Rec2020. </li>
+</ul>
+
+</td>
+</tr>
+
+<tr>
+<td width="150"> 2D </td>
+<td width="150"> WebGL2 </td>
 </tr>
 
 <tr>
 <td width="150"> <canvas id="CanvasA" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasA_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas.
   <ul>
@@ -66,6 +160,7 @@ window.onload = function() {
 
 <tr>
 <td width="150"> <canvas id="CanvasB" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasB_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
   <ul>
@@ -81,6 +176,7 @@ window.onload = function() {
 
 <tr>
 <td width="150"> <canvas id="CanvasC" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasC_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
@@ -96,6 +192,7 @@ window.onload = function() {
 
 <tr>
 <td width="150"> <canvas id="CanvasD" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasD_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same HTMLImageElement to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}.
   <ul>
@@ -111,6 +208,7 @@ window.onload = function() {
 
 <tr>
 <td width="150"> <canvas id="CanvasE" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasE_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
   <ul>
@@ -126,6 +224,7 @@ window.onload = function() {
 
 <tr>
 <td width="150"> <canvas id="CanvasF" width="128" height="128"></canvas> </td>
+<td width="150"> <canvas id="CanvasF_GL" width="128" height="128"></canvas> </td>
 <td>
   Drawing that same image, fetched as a Blob, to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
   <ul>
