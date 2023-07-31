@@ -5,47 +5,96 @@ window.onload = function() {
   var url = "https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png";
   var image = new Image();
   image.onload = function() {
-    // An sRGB canvas shouldn't show the logo.
-    var ctx;
-
-    // A uint8 P3 canvas should show the logo, but it doesn't! It reports that
-    // it's P3, but something is going wrong.
-    ctx = document.getElementById("CanvasP3").getContext(
-        "2d", {colorSpace: 'display-p3'});
+    var ctxA = document.getElementById("CanvasA").getContext("2d", {colorSpace: 'display-p3'});
+    var ctxB = document.getElementById("CanvasB").getContext("2d", {colorSpace: 'display-p3'});
+    var ctxC = document.getElementById("CanvasC").getContext("2d", {colorSpace: 'display-p3'});
+    var ctxD = document.getElementById("CanvasD").getContext("2d", {colorSpace: 'display-p3'});
 
     Promise.all([
-      createImageBitmap(image, 0, 0, 1024, 1024, {colorSpaceConversion:"none"}),
-      createImageBitmap(image, 0, 0, 1024, 1024, {colorSpaceConversion:"default"}),
+      createImageBitmap(image, 0, 0, image.width, image.height),
+      createImageBitmap(image, 0, 0, image.width, image.height, {colorSpaceConversion:"none"}),
+      createImageBitmap(image, 0, 0, image.width, image.height, {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}),
     ]).then(function(sprites) {
-      ctx.drawImage(sprites[0], 0, 0, 256, 256);
-      ctx.drawImage(sprites[1], 256, 256, 256, 256);
+      ctxB.drawImage(sprites[0], 0, 0, 128, 128);
+      ctxC.drawImage(sprites[1], 0, 0, 128, 128);
+      ctxD.drawImage(sprites[2], 0, 0, 128, 128);
     });
 
-    ctx.drawImage(image, 512, 512, 256, 256);
-    console.log(ctx.getContextAttributes().colorSpace);
-    console.log(ctx.getContextAttributes().pixelFormat);
+    ctxA.drawImage(image, 0, 0, 128, 128);
   }
   image.src = url;
 };
 </script>
 </head>
 <body>
-<p>
-Top-left: drawing a P3 image into a P3 canvas via createImageBitmap, having specified colorSpaceConversion:none.
-The result shows all of the pixels, but maxes out at sRGB red.
-This behavior is correct in Chrome.
-</p>
-<p>
-Middle: drawing a P3 image into a P3 canvas via createImageBitmap.
-The result is clamped to the sRGB gamut.
-There is currently no way to create an ImageBitmap that is not clamped to sRGB.
-This is bad. 
-</p>
-<p>
-Bottom-right: drawing a P3 image into a P3 canvas via Image.
-The result is correct.
-This is good.
-</p>
-<p> <canvas id="CanvasP3" width="768" height="768"></canvas> </p>
+
+<table>
+<tr>
+<td width="150"> <img width="128" height="128" src="https://webkit.org/blog-files/color-gamut/Webkit-logo-P3.png"> </td>
+<td> A P3 image as an image element. </td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasA" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same P3 image to a P3 canvas.
+  <ul>
+  <li>
+  On Chrome, the image is appears correctly (is not clamped to the sRGB gamut).
+  </li>
+  <li>
+  On Safari, the image is appears correctly (is not clamped to the sRGB gamut).
+  </li>
+  </ul>
+</td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasB" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same P3 image to a P3 canvas via createImageBitmap, having not specified colorSpaceConversion (so, getting the "default" behavior).
+  <ul>
+  <li>
+  On Chrome, the image gets clamped to the sRGB gamut, and so the image appears as solid red.
+  </li>
+  <li>
+  On Safari, the image is appears correctly (is not clamped to the sRGB gamut).
+  </li>
+  </ul>
+</td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasC" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same P3 image to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none"}.
+  <ul>
+  <li>
+  On Chrome, the image is unaffected by the flag.
+  </li>
+  <li>
+  On Safari, the image is unaffected by the flag.
+  </li>
+  </ul>
+</td>
+</tr>
+
+<tr>
+<td width="150"> <canvas id="CanvasD" width="128" height="128"></canvas> </td>
+<td>
+  Drawing that same P3 image to a P3 canvas via createImageBitmap, having specified {colorSpaceConversion:"none", resizeWidth:500, resizeHeight:500}.
+  <ul>
+  <li>
+  On Chrome, the image's color space (ICC profile) is ignored, the pixels are interpreted as being sRGB, and so the image appears solid red.
+  </li>
+  <li>
+  On Safari, the image is unaffected by the flag.
+  </li>
+  </ul>
+</td>
+</tr>
+
+</table>
+
 </body>
 </html>
