@@ -14,11 +14,12 @@ async function doDrawImage(elementId, image) {
   let gl = element_gl.getContext("webgl2");
   if (!('unpackColorSpace' in gl)) {
     // Safari doesn't support unpackColorSpace yet.
-    // ... I guess just go for it ...
+    return;
+  } else {
+    gl.unpackColorSpace = 'display-p3';
+    gl.drawingBufferColorSpace = 'display-p3';
   }
 
-  gl.unpackColorSpace = 'display-p3';
-  gl.drawingBufferColorSpace = 'display-p3';
 
   let tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -153,6 +154,7 @@ An image as an HTMLImageElement.
   </li>
   <li>
   On Safari, the image is unaffected by the flag.
+  Safari's WebGL implementation does not support unpackColorSpace, so the WebGL column is blank.
   </li>
   </ul>
 </td>
