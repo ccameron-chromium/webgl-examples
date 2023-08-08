@@ -4,7 +4,6 @@
 #drop-area {
   border: 2px dashed #ccc;
   border-radius: 20px;
-  margin: 20px auto;
   padding: 10px;
 }
 #drop-area.highlight {
@@ -573,17 +572,21 @@ function main() {
   <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
   <td>
+  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
+  Drop HDR image here.
+  </div>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td>
   <p><button type="button" id="ButtonSave">Save Canvas</button></p>
   </td>
 
 </tr>
 </table>
 
-<p>
-  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
-  Drop HDR image here.
-  </div>
-</p>
+<hr>
 
 <p style="text-align:center">
 <table style="margin-left: auto; margin-right: auto;">
@@ -612,37 +615,31 @@ function main() {
 
 <td style="text-align:center;">
 
-<p id="HLG_OOTF_Gamma">
-ITU-R BT.2100 HLG Gamma: (unknown)
-</p>
+<p id="HLG_OOTF_Gamma"> ITU-R BT.2100 HLG Gamma: (unknown) </p>
 
 <table>
-<tr>
-<td>
-<label for="HLG_Lw_Nits">Lw (nits)</label>
-<input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
-</td>
+  <tr>
+  <td>
+  <label for="HLG_Lw_Nits">Lw (nits)</label><br>
+  <input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
+  </td>
 
 
-<td>
-<input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
-<label for="RadioHLG_OOTF_f2">Footnote 2</label>
-<br>
-<input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
-<label for="RadioHLG_OOTF_5f">Note 5f</label>
+  <td>
+  <input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
+  <label for="RadioHLG_OOTF_f2">Footnote 2</label>
+  <br>
+  <input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
+  <label for="RadioHLG_OOTF_5f">Note 5f</label>
+  </td>
+  </tr>
+</table>
+
 </td>
 </tr>
 </table>
 
-
-</td>
-
-
-</td>
-
-</tr>
-</table>
-</p>
+<hr>
 
 <p>
 Rendering mode:
