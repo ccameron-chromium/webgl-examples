@@ -179,7 +179,7 @@ const fs = `
       } else {
         Y = k2 * log(nits / HDR_ip - k3) + k4;
       }
-      return Y / nits;
+      return (Y / nits) * (ndwl_white_nits / 120.0);
   }
 
   void main() {
