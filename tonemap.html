@@ -576,6 +576,14 @@ function main() {
 <table style="margin-left: auto; margin-right: auto;">
 <tr>
   <td>
+  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
+  Drop HDR image here.
+  </div>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td>
   Transfer:
   <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
   <label for="RadioPQ">PQ</label>
@@ -593,14 +601,6 @@ function main() {
 
   <input type="radio" id="RadioBT2020" onchange='onChange();' name="input_primaries">
   <label for="RadioBT2020">ITU-R BT.2020</label>
-  </td>
-
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td>
-  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
-  Drop HDR image here.
-  </div>
   </td>
 
   <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
