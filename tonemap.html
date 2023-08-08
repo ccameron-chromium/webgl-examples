@@ -1,0 +1,678 @@
+<html>
+<head>
+<style>
+#drop-area {
+  border: 2px dashed #ccc;
+  border-radius: 20px;
+  margin: 20px auto;
+  padding: 10px;
+}
+#drop-area.highlight {
+  border-color: purple;
+}
+</style>
+<script>
+var canvas;
+var gl;
+var program;
+
+var texture;
+var texture_w;
+var texture_h;
+var texture_pixels;
+
+var hlg_ootf_gamma = 1.2;
+
+var viewport_w;
+var viewport_h;
+var save_requested = false;
+
+let linearToSrgb = function (x) {
+  let a = 1.1371188301409823;
+  let c = 12.919999999992248;
+  let d = 0.003130800090713953;
+  let e = -0.05499994754780801;
+  let g = 0.4166666666666667;
+  if (x < d)
+    return c*x;
+  return Math.pow(a*x, g) + e;
+}
+
+let pqSignalToNits = function(v) {
+  const c1 =  107.0 / 128.0;
+  const c2 = 2413.0 / 128.0;
+  const c3 = 2392.0 / 128.0;
+  const m1 = 1305.0 / 8192.0;
+  const m2 = 2523.0 / 32.0;
+  const p = Math.pow(Math.min(Math.max(v, 0.0), 1.0), 1.0 / m2);
+  return 10000.0 * Math.pow(Math.max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+}
+
+const vs = `attribute vec2 position;
+            varying vec2 texcoord;
+            void main() {
+              texcoord = vec2(0.5+0.5*position.x, 0.5-0.5*position.y);
+              gl_Position = vec4(position, 0.0, 1.0);
+            }`;
+const fs = `
+  precision highp float;
+  uniform sampler2D texture;
+  uniform float clli_max_nits;
+  uniform float ndwl_white_nits;
+  uniform float hlg_ootf_gamma;
+  uniform int mode;
+  uniform int transfer;
+  uniform int primaries;
+  varying vec2 texcoord;
+
+  float srgbToLinear(float x) {
+    if (x < 0.0)
+      return 0.0;
+    if (x < 0.04045)
+      return x / 12.92;
+    return pow((x + 0.055)/1.044, 2.4);
+  }
+  float linearToSrgb(float x) {
+    if (x < 0.003130800090713953)
+      return 12.919999999992248*x;
+    return pow(1.1371188301409823*x, 0.4166666666666667) - 0.05499994754780801;
+  }
+  vec3 srgbToLinear(vec3 c) {
+    return vec3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
+  }
+  vec3 linearToSrgb(vec3 c) {
+    return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
+  }
+
+  float pqSignalToNits(float v) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float p = pow(clamp(v, 0.0, 1.0), 1.0 / m2);
+    return 10000.0 * pow(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+  }
+  float pqNitsToSignal(float L) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float v = pow(clamp(L / 10000.0, 0.0, 1.0), m1);
+    return pow((c1 + c2 * v) / (1.0 + c3 * v), m2);
+  }
+  float pqNormalizedSignal(float L, float Lw, float Lb) {
+    return (pqNitsToSignal(L)  - pqNitsToSignal(Lb)) /
+           (pqNitsToSignal(Lw) - pqNitsToSignal(Lb));
+  }
+
+  float hlgOetfInv(float x) {
+    const float a = 0.17883277;
+    const float b = 1.0 - 4.0*a;
+    const float c = 0.5 - a * log(4.0 * a);
+    if (x <= 0.5) {
+      return pow(x, 2.0) / 3.0;
+    } else {
+      return (exp((x - c) / a) + b) / 12.0;
+    }
+  }
+
+  float toneMapGainChrome(float L, float Lc, float Ld) {
+    if (Ld < Lc) {
+      float a = Ld / (Lc*Lc);
+      float b = 1.0 / Ld;
+      return (1.0 + a*L) / (1.0 + b*L);
+    }
+    return 1.0;
+  }
+
+  // Content is in [Lb, Lw]
+  // Display is [Lmin, Lmax]
+  float toneMapGainBT2408(float L, float Lb, float Lw, float Lmin, float Lmax) {
+    if (Lmax >= Lw) {
+      return 1.0;
+    }
+    if (L >= Lw) {
+      return Lw / L;
+    }
+
+    float Eprime = L;
+
+    float E1 = pqNormalizedSignal(Eprime, Lw, Lb);
+    float minLum = pqNormalizedSignal(Lmin, Lw, Lb);
+    float maxLum = pqNormalizedSignal(Lmax, Lw, Lb);
+    float KS = 1.5 * maxLum - 0.5;
+    float b = minLum;
+
+    float E2 = 0.0;
+    if (E1 <= KS) {
+      return 1.0;
+      E2 = E1;
+    } else {
+      float TB1 = (E1 - KS) / (1.0 - KS);
+      float TB2 = TB1 * TB1;
+      float TB3 = TB2 * TB1;
+      E2 = ( 2.0*TB3 - 3.0*TB2 + 1.0) * KS + \
+           (     TB3 - 2.0*TB2 + TB1) * (1.0 - KS) + \
+           (-2.0*TB3 + 3.0*TB2      ) * maxLum;
+    }
+    float E3 = E2 + b*pow(max(1.0 - E2, 0.0), 4.0);
+    float E4 = E3 * (pqNitsToSignal(Lw) - pqNitsToSignal(Lb)) + pqNitsToSignal(Lb);
+    return pqSignalToNits(E4) / Eprime;
+  }
+
+  float toneMapGainBT2446c(float nits) {
+      float L_HDR = 1000.0;
+      float L_SDR = 120.0;
+      float k1=0.5;
+      float k2=22.0;
+
+      float HDR_ip = 58.6*L_SDR / 120.0 / k1;
+      float z = exp((L_SDR - k1 * HDR_ip) / k2);
+      float k3 = (z - L_HDR / HDR_ip) / (z - 1.0);
+      float k4 = k1 * HDR_ip - k2 * log(1.0 - k3);
+
+      float Y = 0.0;
+      if (nits < HDR_ip) {
+        Y = k1 * nits;
+      } else {
+        Y = k2 * log(nits / HDR_ip - k3) + k4;
+      }
+      return Y / nits;
+  }
+
+  void main() {
+    vec3 hdr = texture2D(texture, texcoord).rgb;
+    vec3 hdr_nits;
+    gl_FragColor.a = 1.0;
+
+    if (mode == -1) {
+      gl_FragColor.rgb = hdr;
+      return;
+    }
+
+    if (transfer == 0) {
+      hdr_nits = vec3(pqSignalToNits(hdr.r), pqSignalToNits(hdr.g), pqSignalToNits(hdr.b));
+    }
+    if (transfer == 1) {
+      hdr_nits = vec3(hlgOetfInv(hdr.r), hlgOetfInv(hdr.g), hlgOetfInv(hdr.b));
+      float L = dot(vec3(0.2627, 0.6780, 0.0593), hdr_nits);
+
+      if (mode == 5) {
+        hdr_nits *= pow(L, hlg_ootf_gamma - 1.0);
+        hdr_nits *= ndwl_white_nits;
+      }
+      else {
+        hdr_nits *= pow(L, 0.2);
+        hdr_nits *= 1000.0;
+      }
+    }
+
+    vec3 sdr_nits = hdr_nits;
+
+    if (mode == 2 || mode == 3 || mode == 4) {
+      float max_rgb = max(max(hdr_nits.r, hdr_nits.g), hdr_nits.b);
+      float gain = 1.0;
+      if (mode == 2) {
+        gain = toneMapGainChrome(max_rgb, clli_max_nits, ndwl_white_nits);
+      }
+      if (mode == 3) {
+        gain = toneMapGainBT2408(max_rgb, 0.0, clli_max_nits, 0.0, ndwl_white_nits);
+      }
+      if (mode == 4) {
+        gain = toneMapGainBT2446c(max_rgb);
+      }
+      if (max_rgb >= clli_max_nits) {
+        gain = ndwl_white_nits / max_rgb;
+      }
+      sdr_nits = gain * hdr_nits;
+    }
+
+    vec3 linear = sdr_nits / ndwl_white_nits;
+
+    if (mode == 0) {
+        linear = clamp(linear, 0.0, 1.0);
+    }
+
+    mat3 rec2020_to_srgb = mat3(
+       1.66049042, -0.12455065, -0.01815075,
+      -0.58764086,  1.13289966, -0.10057884,
+      -0.07284994, -0.0083494 ,  1.11872974);
+    if (primaries == 2) {
+      linear = rec2020_to_srgb * linear;
+    }
+    vec3 srgb = linearToSrgb(linear);
+
+    gl_FragColor.rgb = srgb;
+  }`;
+
+let compileShader = function(gl, vertex_source, fragment_source) {
+  let vertex_shader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vertex_shader, vertex_source);
+  gl.compileShader(vertex_shader);
+  if (!gl.getShaderParameter(vertex_shader, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(vertex_shader));
+     
+  let fragment_shader = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fragment_shader, fragment_source); 
+  gl.compileShader(fragment_shader);
+  if (!gl.getShaderParameter(fragment_shader, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(fragment_shader));
+  
+  let program = gl.createProgram();
+  gl.attachShader(program, vertex_shader);
+  gl.attachShader(program, fragment_shader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program));
+
+  return program;
+}
+
+let createTexture = function(image) {
+  texture = gl.createTexture();
+  texture_w = image.width;
+  texture_h = image.height;
+
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, texture_w, texture_h, 0, gl.RGBA, gl.FLOAT, image);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+
+  var fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) == gl.FRAMEBUFFER_COMPLETE) {
+    texture_pixels = new Float32Array(texture_w * texture_h * 4);
+    gl.readPixels(0, 0, texture_w, texture_h, gl.RGBA, gl.FLOAT, texture_pixels);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fb);
+}
+
+let computeImageMaxRGB = function() {
+  let image_max_rgb = 0;
+  for (let x = 0; x < texture_w; ++x) {
+    for (let y = 0; y < texture_h; ++y) {
+      const offset = 4*(x + y*texture_w);
+      image_max_rgb = Math.max(image_max_rgb, texture_pixels[offset+0]);
+      image_max_rgb = Math.max(image_max_rgb, texture_pixels[offset+1]);
+      image_max_rgb = Math.max(image_max_rgb, texture_pixels[offset+2]);
+    }
+  }
+  const image_max_nits = pqSignalToNits(image_max_rgb).toFixed();
+  ImageMax.innerHTML =
+      'Image maximum pixel value: ' +
+      image_max_rgb.toFixed(5) +
+      '<br>' +
+      '(PQ: ' + image_max_nits + ' nits)';
+
+  CLLIMaxNits.value = image_max_nits;
+}
+
+let draw = function() {
+  gl.useProgram(program);
+
+  // Draw using that program.
+  let vertices = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+
+  let indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
+
+  let positionLocation = gl.getAttribLocation(program, 'position');
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(positionLocation);
+
+  {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'texture'), 0);
+  }
+
+  gl.uniform1f(gl.getUniformLocation(program, 'ndwl_white_nits'), NDWLWhiteNits.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'clli_max_nits'), CLLIMaxNits.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'hlg_ootf_gamma'), hlg_ootf_gamma);
+
+  let mode = '';
+  if (RadioClamp.checked) {
+    mode = 'clamp';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 0);
+  }
+  if (RadioFullHDR.checked) {
+    mode = 'hdr';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 1);
+  }
+  if (RadioReinhard.checked) {
+    mode = 'reinhard';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 2);
+  }
+  if (RadioBT2408.checked) {
+    mode = 'bt2408';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 3);
+  }
+  if (RadioBT2446.checked) {
+    mode = 'bt2446c';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 4);
+  }
+  if (RadioBT2100.checked) {
+    mode = 'bt2100';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 5);
+  }
+  if (RadioNative.checked) {
+    mode = 'native';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), -1);
+    if (RadioPQ.checked) {
+      gl.drawingBufferColorSpace = 'rec2100-pq';
+      canvas.configureHighDynamicRange({
+          smpteSt2086Metadata:{
+              redPrimaryX:0.708,
+              redPrimaryY:0.292,
+              greenPrimaryX:0.170,
+              greenPrimaryY:0.797,
+              bluePrimaryX:0.131,
+              bluePrimaryY:0.046,
+              whitePointX:0.3127,
+              whitePointY:0.3290,
+              minimumLuminance:1,
+              maximumLuminance:CLLIMaxNits.value,
+          }});
+    }
+    if (RadioHLG.checked) {
+      gl.drawingBufferColorSpace = 'rec2100-hlg';
+      canvas.configureHighDynamicRange({});
+    }
+  } else {
+    gl.drawingBufferColorSpace = 'srgb';
+    if (`configureHighDynamicRange` in canvas) {
+      canvas.configureHighDynamicRange({ mode:'extended' });
+    }
+  }
+
+  if (RadioPQ.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 0);
+  }
+  if (RadioHLG.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 1);
+  }
+
+  if (RadioSRGB.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 0);
+  }
+  if (RadioBT2020.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 2);
+  }
+
+  gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+
+  if (save_requested) {
+    save_requested = false;
+    var mime_type = "image/jpeg";
+    var download_link = document.createElement('a');
+    download_link.download =
+        'canvas-' + mode + '.jpg';
+    download_link.href = canvas.toDataURL(mime_type);
+    download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
+ 
+    document.body.appendChild(download_link);
+    download_link.click();
+    document.body.removeChild(download_link);
+  }
+}
+
+let initializeGL = function() {
+  canvas = document.getElementById('Canvas');
+
+  gl = canvas.getContext('webgl2');
+  gl.getExtension('EXT_color_buffer_half_float');
+
+  if (`drawingBufferStorage` in gl) {
+    gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  }
+
+  gl.drawingBufferColorSpace = 'srgb';
+
+  program = compileShader(gl, vs, fs);
+}
+
+let drawImage = function(image) {
+  createTexture(image);
+  computeImageMaxRGB();
+
+  viewport_w = image.width;
+  viewport_h = image.height;
+  canvas.width = viewport_w;
+  canvas.height = viewport_h;
+  canvas.style = 'max-width:100%; max-height:85vh;';
+  gl.viewport(0, 0, viewport_w, viewport_h);
+  draw();
+}
+
+let loadImage = function(url) {
+  texture = null;
+
+  let image = new Image();
+  image.onload = function() {
+    createImageBitmap(image, {colorSpaceConversion:"none"}).then((image) => {
+      onChange();
+      drawImage(image);
+    });
+/*
+    onChange();
+    drawImage(image);
+*/
+  }
+  image.src = url;
+}
+
+let onChange = function() {
+  let recomputeHlgOotfGamma = function() {
+    if (RadioHLG_OOTF_f2.checked) {
+      hlg_ootf_gamma = 1.2 * Math.pow(1.111, Math.log(HLG_Lw_Nits.value / 1000.0) / Math.log(2.0));
+    }
+    if (RadioHLG_OOTF_5f.checked) {
+      hlg_ootf_gamma = 1.2 + 0.42 * Math.log(HLG_Lw_Nits.value / 1000.0) / Math.log(10.0);
+    }
+    HLG_OOTF_Gamma.innerText = 'ITU-R BT.2100 HLG Gamma: ' + hlg_ootf_gamma.toFixed(4);
+  }
+  recomputeHlgOotfGamma();
+
+  if (RadioHLG.checked) {
+    CLLIMaxNits.value = 1000;
+    // HLG_2100.hidden = false;
+    RadioBT2100.disabled = false;
+    // RadioBT2446.disabled = false;
+  }
+  if (RadioPQ.checked) {
+    // HLG_2100.hidden = true;
+    RadioBT2100.disabled = true;
+    // RadioBT2446.disabled = true;
+  }
+
+  draw();
+}
+
+function allowDrop(ev) {
+  ev.preventDefault();
+}
+
+function onDrop(event) {
+  event.preventDefault();
+  console.log(event.dataTransfer.files);
+  let image_file = null;
+  for (const file of event.dataTransfer.files) {
+    image_file = file;
+  }
+
+  let reader = new FileReader();
+  reader.onloadend = function() {
+    let url = reader.result;
+    loadImage(url);
+  }
+  reader.readAsDataURL(image_file)
+}
+
+
+function main() {
+  initializeGL();
+
+  let saveCanvas = function() {
+    save_requested = true;
+    draw();
+  }
+
+  ButtonSave.addEventListener('click', saveCanvas);
+  CLLIMaxNits.addEventListener('input', function (evt) {
+    draw();
+  });
+  NDWLWhiteNits.addEventListener('input', function (evt) {
+    draw();
+  });
+
+  HLG_Lw_Nits.addEventListener('input', function (evt) {
+    draw();
+  });
+
+  loadImage('staircase-pq.avif');
+  // loadImage('tonemap/image_01.png');
+}
+</script>
+</head>
+<body onload='main()'>
+
+<div style="text-align:center;">
+
+<table style="margin-left: auto; margin-right: auto;">
+<tr>
+  <td>
+  Transfer:
+  <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
+  <label for="RadioPQ">PQ</label>
+
+  <input type="radio" id="RadioHLG" onchange='onChange();' name="input_transfer">
+  <label for="RadioHLG">HLG</label>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td>
+  Primaries:
+  <input type="radio" id="RadioSRGB" onchange='onChange();' name="input_primaries" checked="true">
+  <label for="RadioSRGB">sRGB</label>
+
+  <input type="radio" id="RadioBT2020" onchange='onChange();' name="input_primaries">
+  <label for="RadioBT2020">ITU-R BT.2020</label>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td>
+  <p><button type="button" id="ButtonSave">Save Canvas</button></p>
+  </td>
+
+</tr>
+</table>
+
+<p>
+  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
+  Drop HDR image here.
+  </div>
+</p>
+
+<p style="text-align:center">
+<table style="margin-left: auto; margin-right: auto;">
+
+<tr>
+
+<td style="text-align:center;">
+  <p id='ImageMax'>Image maximum pixel value: (undefined)</p>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td style="text-align:center;">
+  <label for="CLLIMaxNits">CLLI Max Luminance (nits)</label><br>
+  <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td style="text-align:center;">
+  <label for="NDWLWhiteNits">NDWL White Luminance (nits)</label><br>
+  <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td style="text-align:center;">
+
+<p id="HLG_OOTF_Gamma">
+ITU-R BT.2100 HLG Gamma: (unknown)
+</p>
+
+<table>
+<tr>
+<td>
+<label for="HLG_Lw_Nits">Lw (nits)</label>
+<input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
+</td>
+
+
+<td>
+<input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
+<label for="RadioHLG_OOTF_f2">Footnote 2</label>
+<br>
+<input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
+<label for="RadioHLG_OOTF_5f">Note 5f</label>
+</td>
+</tr>
+</table>
+
+
+</td>
+
+
+</td>
+
+</tr>
+</table>
+</p>
+
+<p>
+Rendering mode:
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioClamp" checked="true">
+<label for="RadioClamp">Clamped</label>
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioFullHDR">
+<label for="RadioFullHDR">Full HDR</label>
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioReinhard">
+<label for="RadioReinhard">Reinhard</label>
+
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2408">
+<label for="RadioBT2408">ITU-R BT.2408</label>
+
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2446">
+<label for="RadioBT2446">ITU-R BT.2446 (C)</label>
+
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2100">
+<label for="RadioBT2100">ITU-R BT.2100</label>
+<input type="radio" name="render_mode" onchange='onChange();' id="RadioNative">
+<label for="RadioNative">Native</label>
+</p>
+
+</div>
+
+<div id='Viewer' style='text-align:center;'>
+  <p><canvas id='Canvas' width='32' height='32'></canvas></p>
+</div>
+
+</div>
+</div>
+
+</body>
+</html>
