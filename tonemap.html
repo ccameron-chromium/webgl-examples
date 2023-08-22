@@ -63,6 +63,7 @@ const fs = `
   uniform int mode;
   uniform int tonemap_scalar_mode;
   uniform int gamut_map_mode;
+  uniform int mark_out_of_gamut;
   uniform int transfer;
   uniform int primaries;
   uniform int use_bgr;
@@ -213,24 +214,52 @@ const fs = `
     return pqSignalToNits(E4) / Eprime;
   }
 
-  float toneMapGainBT2446c(float nits) {
-      float L_HDR = 1000.0;
-      float L_SDR = 120.0;
-      float k1=0.5;
-      float k2=22.0;
+  float toneMapGainBT2446a(float Y_HDR, float L_HDR, float L_SDR) {
+    float rho_hdr = 1.0 + 32.0 * pow(L_HDR / 10000.0, 1.0/2.4);
+    float rho_sdr = 1.0 + 32.0 * pow(L_SDR / 10000.0, 1.0/2.4);
+ 
+    // Y_HDR is "A normalized full-range linear display-light HDR signal"
+    float Yprime = pow(Y_HDR / L_HDR, 1.0/2.4);
+ 
+    float Yp_prime = log(1.0 + (rho_hdr - 1.0) * Yprime) / log(rho_hdr);
+    float Yc_prime = 0.0;
+    if (Yp_prime < 0.0) {
+      Yc_prime = 0.0;
+    } else if (Yp_prime < 0.7399) {
+      Yc_prime = 1.0770 * Yp_prime;
+    } else if (Yp_prime < 0.9909) {
+      Yc_prime = -1.1510 * pow(Yp_prime, 2.0) + 2.7811*Yp_prime - 0.6302;
+    } else if (Yp_prime <= 1.0) {
+      Yc_prime = 0.5 * Yp_prime + 0.5;
+    } else {
+      Yc_prime = 1.0;
+    }
+    float Ysdr_prime = (pow(rho_sdr, Yc_prime) - 1.0) / (rho_sdr - 1.0);
+ 
+    // This is not explicitly in the formulation, but I think was intended.
+    float Ysdr = pow(Ysdr_prime, 2.4);
+    return (Ysdr * L_SDR) / Y_HDR;
+  }
 
-      float HDR_ip = 58.6*L_SDR / 120.0 / k1;
-      float z = exp((L_SDR - k1 * HDR_ip) / k2);
-      float k3 = (z - L_HDR / HDR_ip) / (z - 1.0);
-      float k4 = k1 * HDR_ip - k2 * log(1.0 - k3);
+  float toneMapGainBT2446c(float Y_hdr) {
+      float k1 = 0.83802;
+      float k2 = 15.09968;
+      float k3 = 0.74204;
+      float k4 = 78.99439;
+      float HDR_ip = 58.5 / k1;
 
-      float Y = 0.0;
-      if (nits < HDR_ip) {
-        Y = k1 * nits;
+      float Y_sdr = 0.0;
+      if (Y_hdr < HDR_ip) {
+        Y_sdr = k1 * Y_hdr;
       } else {
-        Y = k2 * log(nits / HDR_ip - k3) + k4;
+        Y_sdr = k2 * log(Y_hdr / HDR_ip - k3) + k4;
       }
-      return (Y / nits) * (ndwl_white_nits / 120.0);
+      const float kSdrMax = 120.0;
+      if (Y_sdr > kSdrMax) {
+        Y_sdr = kSdrMax;
+      }
+      Y_sdr *= ndwl_white_nits / kSdrMax;
+      return Y_sdr / Y_hdr;
   }
 
   // Intersect the line segment between a and b with the unit cube.
@@ -343,7 +372,7 @@ const fs = `
       return;
     }
 
-    if (mode == 5) {
+    if (mode == 6) {
       // If the mode is ITU-R BT.2100, just apply the custom OOTF gamma.
 
       // Convert back to linear [0, 1] before the OOTF.
@@ -357,31 +386,49 @@ const fs = `
       // For all other modes, we apply tonemapping to nits.
 
       // Compute the tonemapping gain.
-      float gain = 1.0;
+      vec3 gain = vec3(1.0, 1.0, 1.0);
       {
         // Compute the tonemapping function input.
-        float tonemap_input = 0.0;
+        vec3 tonemap_input = vec3(0.0, 0.0, 0.0);
         if (tonemap_scalar_mode == 0) {
           // maxRGB
-          tonemap_input = max(max(c.r, c.g), c.b);
+          tonemap_input = vec3(max(max(c.r, c.g), c.b));
         }
         if (tonemap_scalar_mode == 1) {
           // YRGB
-          tonemap_input = rec2020_rgb_to_yuv(c).r;
+          tonemap_input = vec3(rec2020_rgb_to_yuv(c).r);
+        }
+        if (tonemap_scalar_mode == 2) {
+          // R'G'B'
+          tonemap_input = c;
         }
 
         // Compute the tonemapping function's gain for each channel.
         if (mode == 2) {
           // Reinhard.
-          gain = toneMapGainChrome(tonemap_input, clli_max_nits, ndwl_white_nits);
+          gain = vec3(
+              toneMapGainChrome(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+              toneMapGainChrome(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+              toneMapGainChrome(tonemap_input.b, clli_max_nits, ndwl_white_nits));
         }
         if (mode == 3) {
           // ITU-R BT.2408.
-          gain = toneMapGainBT2408(tonemap_input, 0.0, clli_max_nits, 0.0, ndwl_white_nits);
+          gain = vec3(
+              toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+              toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+              toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
         }
         if (mode == 4) {
+          // ITU-R BT.2446 Method A.
+          gain = vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+                      toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+                      toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
+        }
+        if (mode == 5) {
           // ITU-R BT.2446 Method C.
-          gain = toneMapGainBT2446c(tonemap_input);
+          gain = vec3(toneMapGainBT2446c(tonemap_input.r),
+                      toneMapGainBT2446c(tonemap_input.g),
+                      toneMapGainBT2446c(tonemap_input.b));
         }
       }
 
@@ -405,13 +452,25 @@ const fs = `
         c = gamutMapScale(c);
       }
       if (gamut_map_mode == 4) {
-        c = 0.5 * gamutMapScaleUV(c) +
-            0.5 * gamutMapScale(c);
+        vec3 c1 = gamutMapScaleUV(c);
+        vec3 c2 = gamutMapScale(c);
+        float best_err = -1.0;
+        float best_alpha = 0.0;
+
+        for (float alpha = 0.0; alpha < 1.0; alpha += 1.0/32.0) {
+          vec3 c_alpha = alpha * c1 + (1.0 - alpha) * c2;
+          float err = dot(c_alpha - c, c_alpha - c);
+          if (best_err < 0.0 || err < best_err) {
+            best_alpha = alpha;
+            best_err = err;
+          }
+        }
+        c = best_alpha * c1 + (1.0 - best_alpha) * c2;
       }
       // c = srgbToLinear(c);
     }
 
-    if (gamut_map_mode == -1) {
+    if (mark_out_of_gamut == 1) {
       c = mark_out_of_range(c);
     }
 
@@ -489,10 +548,8 @@ let computeImageMaxRGB = function() {
   const image_max_nits_Y   = pqSignalToNits(image_max_Y).toFixed();
   const image_max_nits_rgb = pqSignalToNits(image_max_rgb).toFixed();
   ImageMax.innerHTML =
-      'Image maximum' + 
-      '<br>' + 
-      'Pixel RGB: ' + image_max_rgb.toFixed(2) + ' (' + image_max_nits_rgb + ' nits)<br>' +
-      'Pixel Y: '   + image_max_Y.toFixed(2)   + ' (' + image_max_nits_Y   + ' nits)';
+      'Max RGB: ' + image_max_rgb.toFixed(2) + ' (' + image_max_nits_rgb + ' nits)<br>' +
+      'Max Y: '   + image_max_Y.toFixed(2)   + ' (' + image_max_nits_Y   + ' nits)';
 
   CLLIMaxNits.value = image_max_nits_Y;
 }
@@ -543,14 +600,19 @@ let draw = function() {
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), 3);
     use_tonemap = true;
   }
-  if (RadioBT2446.checked) {
-    mode = 'bt2446c';
+  if (RadioBT2446A.checked) {
+    mode = 'bt2446a';
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), 4);
+    use_tonemap = true;
+  }
+  if (RadioBT2446C.checked) {
+    mode = 'bt2446c';
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 5);
     use_tonemap = true;
   }
   if (RadioBT2100.checked) {
     mode = 'bt2100_gamma' + hlg_ootf_gamma.toFixed(2);
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 5);
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 6);
   }
   if (RadioNativePQ.checked) {
     mode = 'native-pq';
@@ -592,6 +654,10 @@ let draw = function() {
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 1);
       mode += '-y_rgb'
     }
+    if (RadioRpGpBp.checked) {
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 2);
+      mode += '-rpgpbp'
+    }
   } else {
     gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), -1);
   }
@@ -617,9 +683,8 @@ let draw = function() {
     gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 4);
     gamut_map_mode = '-mix';
   }
-  if (RadioGamutMark.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), -1);
-  }
+
+  gl.uniform1i(gl.getUniformLocation(program, 'mark_out_of_gamut'), RadioGamutMark.checked);
 
 
   if (RadioPQ.checked) {
@@ -632,22 +697,27 @@ let draw = function() {
   if (RadioSRGB.checked) {
     gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 0);
   }
+  if (RadioP3.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 1);
+  }
   if (RadioBT2020.checked) {
     gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 2);
   }
 
-  gl.uniform1i(gl.getUniformLocation(program, 'use_bgr'), /*CheckboxBGR.checked*/0);
+  gl.uniform1i(gl.getUniformLocation(program, 'use_bgr'), CheckboxBGR.checked);
 
   gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
 
   if (save_requested) {
     save_requested = false;
-    var mime_type = "image/jpeg";
-    var download_link = document.createElement('a');
+    let mime_type = "image/jpeg";
+    let download_link = document.createElement('a');
+    let data_url = canvas.toDataURL(mime_type);
+
     download_link.download = filename + '-' + mode + gamut_map_mode + '.png';
-    download_link.href = canvas.toDataURL(mime_type);
+    download_link.href = data_url;
     download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
- 
+
     document.body.appendChild(download_link);
     download_link.click();
     document.body.removeChild(download_link);
@@ -718,6 +788,10 @@ let onChange = function() {
   draw();
 }
 
+let onToneMapChange = function() {
+  onChange();
+}
+
 function allowDrop(ev) {
   ev.preventDefault();
 }
@@ -768,176 +842,217 @@ function main() {
 </head>
 <body onload='main()'>
 
-<div style="text-align:center;">
-
 <table style="margin-left: auto; margin-right: auto;">
-<tr>
-  <td>
-  <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
-  Drop HDR image here.
-  </div>
-  </td>
-
-  <!--
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td>
-  <input type="checkbox" id="CheckboxBGR" onchange='onChange();' name="input_primaries" checked="true">
-  <label for="CheckboxBGR">Swap RGB to BGR</label>
-  </td>
-  -->
-
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td>
-  Transfer:
-  <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
-  <label for="RadioPQ">PQ</label>
-
-  <input type="radio" id="RadioHLG" onchange='onChange();' name="input_transfer">
-  <label for="RadioHLG">HLG</label>
-  </td>
-
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td>
-  Primaries:
-  <input type="radio" id="RadioSRGB" onchange='onChange();' name="input_primaries">
-  <label for="RadioSRGB">sRGB</label>
-
-  <input type="radio" id="RadioBT2020" onchange='onChange();' name="input_primaries" checked="true">
-  <label for="RadioBT2020">ITU-R BT.2020</label>
-  </td>
-
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td>
-  <p><button type="button" id="ButtonSave">Save Canvas</button></p>
-  </td>
-
-</tr>
-</table>
-
-<hr>
-
-<p style="text-align:center">
-<table style="margin-left: auto; margin-right: auto;">
-
-<tr>
-
-<td style="text-align:center; width:200px">
-  <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
-</td>
-
-
-<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-<td style="text-align:center;">
-
-Tonemap input scalar:<br>
-<input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioYRGB" checked="true">
-<label for="RadioYRGB">YRGB</label><br>
-<input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioMaxRGB">
-<label for="RadioMaxRGB">maxRGB</label>
-
-</td>
-
-<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-<td style="text-align:center;">
-
-Gamut mapping:<br>
-
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutNone">
-<label for="RadioGamutNone">None</label>
-
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutMark">
-<label for="RadioGamutMark">Mark</label>
-
-<br>
-
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutClamp" checked="true">
-<label for="RadioGamutClamp">Clamp RGB</label>
-
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleUV">
-<label for="RadioGamutScaleUV">Scale UV</label>
-
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleRGB">
-<label for="RadioGamutScaleRGB">Scale RGB</label>
-
-<br>
-<input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutMix">
-<label for="RadioGamutMix">Mix (Scale RGB, Scale UV)</label>
-</td>
-
-<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-<td style="text-align:center;">
-  <label for="CLLIMaxNits">CLLI<br>Max Luminance (nits)</label><br>
-  <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
-</td>
-
-<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-<td style="text-align:center;">
-  <label for="NDWLWhiteNits">NDWL<br>White Luminance (nits)</label><br>
-  <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
-</td>
-
-<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-<td style="text-align:center;">
-
-<p id="HLG_OOTF_Gamma"> ITU-R BT.2100<br>HLG Gamma: (unknown) </p>
-
-<table>
   <tr>
-  <td>
-  <label for="HLG_Lw_Nits">Lw (nits)</label><br>
-  <input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
-  </td>
+    <td>
+      <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
+      Drop HDR image here.
+      </div>
+      <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
+    </td>
 
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-  <td>
-  <input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
-  <label for="RadioHLG_OOTF_f2">Footnote 2</label>
-  <br>
-  <input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
-  <label for="RadioHLG_OOTF_5f">Note 5f</label>
-  </td>
+    <td>
+      <input type="checkbox" id="CheckboxBGR" onchange='onChange();' name="input_primaries" checked="true">
+      <label for="CheckboxBGR">Swap RGB to BGR</label>
+    </td>
+
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+    <td>
+      Transfer:
+      <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
+      <label for="RadioPQ">PQ</label>
+
+      <input type="radio" id="RadioHLG" onchange='onChange();' name="input_transfer">
+      <label for="RadioHLG">HLG</label>
+    </td>
+
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+    <td>
+      Primaries:
+      <input type="radio" id="RadioSRGB" onchange='onChange();' name="input_primaries">
+      <label for="RadioSRGB">sRGB</label>
+
+      <input type="radio" id="RadioP3" onchange='onChange();' name="input_primaries" checked="true">
+      <label for="RadioP3">DCI P3</label>
+
+      <input type="radio" id="RadioBT2020" onchange='onChange();' name="input_primaries" checked="true">
+      <label for="RadioBT2020">ITU-R BT.2020</label>
+    </td>
+
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+    <td>
+      <p><button type="button" id="ButtonSave">Save Canvas</button></p>
+    </td>
+
   </tr>
 </table>
 
-</td>
-</tr>
-</table>
-
+<!-- **** CLLI, NDWL parameters **** -->
 <hr>
 
-<p>
-Rendering mode:
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioClamp" checked="true">
-<label for="RadioClamp">Clamp only</label>
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioFullHDR">
-<label for="RadioFullHDR">Full HDR</label>
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioReinhard">
-<label for="RadioReinhard">Reinhard</label>
+<table style="margin-left: auto; margin-right: auto;">
+  <tr>
+    <td style="text-align:center;">
+      <label for="CLLIMaxNits">CLLI Max Luminance (nits)</label>
+      <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
+    </td>
 
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2408">
-<label for="RadioBT2408">ITU-R BT.2408</label>
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2446">
-<label for="RadioBT2446">ITU-R BT.2446 (C)</label>
+    <td style="text-align:center;">
+      <label for="NDWLWhiteNits">NDWL White Luminance (nits)</label>
+      <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
+    </td>
+  </tr>
+</table>
 
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioBT2100">
-<label for="RadioBT2100">ITU-R BT.2100</label>
 
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioNativePQ">
-<label for="RadioNativePQ">Native PQ</label>
+<!-- **** Tonemap parameters **** -->
+<hr>
 
-<input type="radio" name="render_mode" onchange='onChange();' id="RadioNativeHLG">
-<label for="RadioNativeHLG">Native HLG</label>
-</p>
+<table style="margin-left: auto; margin-right: auto;">
+  <tr>
+
+  <td style="text-align:center;">
+    Tonemap input:<br>
+    <table>
+    <tr><td style="width:200px;">
+      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioYRGB" checked="true">
+      <label for="RadioYRGB">YRGB</label>
+    </td></tr>
+    <tr><td>
+      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioMaxRGB">
+      <label for="RadioMaxRGB">maxRGB</label>
+    </td></tr>
+    <tr><td>
+      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioRpGpBp">
+      <label for="RadioRpGpBp">R'G'B'</label>
+    </td></tr>
+    </table>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td style="text-align:center;">
+    Tonemap function:
+    <table>
+      <tr>
+        <td style="width:200px;">
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioFullHDR">
+          <label for="RadioFullHDR">Full HDR</label>
+        </td>
+        <td style="width:200px;">
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2100">
+          <label for="RadioBT2100">ITU-R BT.2100</label>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioReinhard">
+          <label for="RadioReinhard">Reinhard</label>
+        </td>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2408">
+          <label for="RadioBT2408">ITU-R BT.2408</label>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2446A">
+          <label for="RadioBT2446A">ITU-R BT.2446 (A)</label>
+        </td>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2446C">
+          <label for="RadioBT2446C">ITU-R BT.2446 (C)</label>
+        </td>
+        <td>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioNativePQ">
+          <label for="RadioNativePQ">Native PQ</label>
+        </td>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioNativeHLG">
+          <label for="RadioNativeHLG">Native HLG</label>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioClamp" checked="true">
+          <label for="RadioClamp">Clamp only</label>
+        </td>
+        <td>
+        </td>
+      </tr>
+    </table>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td style="text-align:center;">
+    Gamut mapping:<br>
+    <table>
+    <tr>
+      <td style="width:125px;">
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutNone">
+        <label for="RadioGamutNone">None</label>
+      </td>
+      <td style="width:125px;">
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutClamp" checked="true">
+        <label for="RadioGamutClamp">Clamp RGB</label>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleUV">
+        <label for="RadioGamutScaleUV">Scale UV</label>
+      </td>
+      <td>
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleRGB">
+        <label for="RadioGamutScaleRGB">Scale RGB</label>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutMix">
+        <label for="RadioGamutMix">YUV Min L2</label>
+      </td>
+    </tr>
+    </table>
+
+    <input type="checkbox" onchange='onChange();' id="RadioGamutMark">
+    <label for="RadioGamutMark">Mark out of gamut</label>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+  <td style="text-align:center;">
+    <p id="HLG_OOTF_Gamma"> ITU-R BT.2100<br>HLG Gamma: (unknown) </p>
+    <table>
+      <tr>
+        <td>
+          <label for="HLG_Lw_Nits">Lw (nits)</label><br>
+          <input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
+        </td>
+        <td>
+          <input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
+          <label for="RadioHLG_OOTF_f2">Footnote 2</label>
+          <br>
+          <input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
+          <label for="RadioHLG_OOTF_5f">Note 5f</label>
+        </td>
+      </tr>
+    </table>
+  </td>
+</tr>
+</table>
 
 </div>
 
