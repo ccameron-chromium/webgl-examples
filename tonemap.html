@@ -284,7 +284,6 @@ const fs = `
   }
 
   vec3 gamutMapScale(vec3 rgb) {
-    float Y = rec2020_rgb_to_yuv(rgb).r;
     return intersectWithUnitCube(rgb, vec3(0.0, 0.0, 0.0));
   }
 
@@ -327,6 +326,26 @@ const fs = `
     c = clamp(c, 0.0, 1.0);
     c *= pow(rec2020_rgb_to_yuv(c).r, -0.2 / 1.2);
     return c;
+  }
+
+  // Find alpha in [0, 1] that minimizes |c0 - (alpha*c1 + (1-alpha)*c2)|
+  vec3 nearestPointOnSegment(vec3 c0, vec3 c1, vec3 c2) {
+    // let u = c2 - c1
+    // let v = c0 - c1
+    // minimize dist2(c0, c1 + alpha*(c2 - c1)) =
+    //          dist2(c0, c1 + alpha*u) =
+    //          dot(alpha*u - v, alpha*u - v) =
+    //          alpha^2 * dot(u, u) - alpha*2*dot(u, v) + dot(v, v)
+    // this is minimized at alpha = dot(u, v) / dot(u, u)
+    vec3 u = c2 - c1;
+    vec3 v = c0 - c1;
+    float a = dot(u, u);
+    float b = 2.0 * dot(u, v);
+    if (a <= 0.0) {
+      return c0;
+    }
+    float alpha = clamp(dot(u, v) / a, 0.0, 1.0);
+    return (1.0 - alpha) * c1 + alpha * c2;
   }
 
   void main() {
@@ -441,7 +460,6 @@ const fs = `
 
     // Gamut map.
     if (mode != 1) {
-      // c = linearToSrgb(c);
       if (gamut_map_mode == 1) {
         c = gamutMapClamp(c);
       }
@@ -452,22 +470,15 @@ const fs = `
         c = gamutMapScale(c);
       }
       if (gamut_map_mode == 4) {
-        vec3 c1 = gamutMapScaleUV(c);
-        vec3 c2 = gamutMapScale(c);
-        float best_err = -1.0;
-        float best_alpha = 0.0;
-
-        for (float alpha = 0.0; alpha < 1.0; alpha += 1.0/32.0) {
-          vec3 c_alpha = alpha * c1 + (1.0 - alpha) * c2;
-          float err = dot(c_alpha - c, c_alpha - c);
-          if (best_err < 0.0 || err < best_err) {
-            best_alpha = alpha;
-            best_err = err;
-          }
+        // This is finding the nearest L2 point in RGB space that is in the
+        // plane through R=G=B and the color c itself. I should look into adding
+        // some sort of weighting matrix nearestPointOnSegment, so that one can
+        // use that to trade off between chrome and luma changes (I guess).
+        float maxRGB = max(max(c.r, c.g), c.b);
+        if (maxRGB > 1.0) {
+          c = nearestPointOnSegment(c, c / maxRGB, vec3(1.0, 1.0, 1.0));
         }
-        c = best_alpha * c1 + (1.0 - best_alpha) * c2;
       }
-      // c = srgbToLinear(c);
     }
 
     if (mark_out_of_gamut == 1) {
@@ -679,9 +690,13 @@ let draw = function() {
     gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 3);
     gamut_map_mode = '-scale_rgb';
   }
-  if (RadioGamutMix.checked) {
+  if (RadioGamutRGB_L2.checked) {
     gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 4);
-    gamut_map_mode = '-mix';
+    gamut_map_mode = '-rgbL2';
+  }
+  if (RadioGamutYUV_L2.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 5);
+    gamut_map_mode = '-yuvL2';
   }
 
   gl.uniform1i(gl.getUniformLocation(program, 'mark_out_of_gamut'), RadioGamutMark.checked);
@@ -1021,8 +1036,12 @@ function main() {
     </tr>
     <tr>
       <td>
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutMix">
-        <label for="RadioGamutMix">YUV Min L2</label>
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutRGB_L2">
+        <label for="RadioGamutRGB_L2">Min RGB L2</label>
+      </td>
+      <td>
+        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutYUV_L2" hidden=true>
+        <label for="RadioGamutYUV_L2"  hidden=true>YUV Min L2</label>
       </td>
     </tr>
     </table>
