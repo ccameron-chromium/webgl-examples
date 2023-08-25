@@ -1,0 +1,66 @@
+<html>
+<body>
+
+<!--
+// oklab(60% 0.225 0.126)
+//   color(display-p3 0.878 0.144 0.09)
+//   color(display-p3 0.878 0.144 0.09) -- no gamut mapping
+
+// oklab(70% 0.225 0.126)
+//   color(display-p3 1.02 0.317 0.239)
+//   color(display-p3 1 0.317 0.239) -- gamut mapped
+
+// oklab(80% 0.225 0.126)
+//   color(display-p3 1.164 0.46 0.366)
+//   color(display-p3 1 0.564 0.465)
+
+// oklab(90% 0.225 0.126)
+//   color(display-p3 1.31 0.597 0.491)
+//   color(display-p3 1 0.774 0.71)
+
+// oklab(99% 0.225 0.126)
+//   color(display-p3 1.443 0.719 0.605)
+//   color(srgb-linear 2.732 0.399 0.273)
+
+-->
+
+<p>The following boxes show the rendering of the sequence of colors:</p>
+<ul>
+  <li>oklab(60% 0.225 0.126)</li>
+  <li>oklab(70% 0.225 0.126)</li>
+  <li>oklab(80% 0.225 0.126)</li>
+  <li>oklab(90% 0.225 0.126)</li>
+  <li>oklab(99% 0.225 0.126)</li>
+</ul>
+</p>
+
+
+<p>
+<canvas style="width:32px; height:32px; background-color:oklab(60% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(70% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(80% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(90% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(99% 0.255 0.126);"></canvas>
+Browser rendering of color (potentially unclamped!) <img src="hlg.avif" style="width:1px; height:1px;">
+</p>
+
+<p>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 0.878 0.144 0.09);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1.0   0.317 0.239);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1.0   0.46  0.366);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1.0   0.597 0.491);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1.0   0.719 0.605);"></canvas>
+Clamping of the color to display-p3
+</p>
+
+<p>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 0.878 0.144 0.09);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.317 0.239);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.564 0.465);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.774 0.71);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.942 0.923);"></canvas>
+CSS gamut mapping of color
+</p>
+
+</body>
+</html>
