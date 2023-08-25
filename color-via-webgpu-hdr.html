@@ -5,23 +5,23 @@ var current_screen_details;
 var rendering_hdr_headroom = 1;
 
 // oklab(60% 0.225 0.126)
-//   color(srgb-linear 0.909 -0.01 -0.01)
+//   color(display-p3 0.878 0.144 0.09)
 //   color(display-p3 0.878 0.144 0.09) -- no gamut mapping
 
 // oklab(70% 0.225 0.126)
+//   color(display-p3 1.02 0.317 0.239)
 //   color(display-p3 1 0.317 0.239) -- gamut mapped
-//   color(srgb-linear 1.263 0.041 0.024)
 
 // oklab(80% 0.225 0.126)
+//   color(display-p3 1.164 0.46 0.366)
 //   color(display-p3 1 0.564 0.465)
-//   color(srgb-linear 1.692 0.127 0.079)
 
 // oklab(90% 0.225 0.126)
+//   color(display-p3 1.31 0.597 0.491)
 //   color(display-p3 1 0.774 0.71)
-//   color(srgb-linear 2.201 0.25 0.165)
 
 // oklab(99% 0.225 0.126)
-//   color(display-p3 1 0.942 0.923)
+//   color(display-p3 1.443 0.719 0.605)
 //   color(srgb-linear 2.732 0.399 0.273)
 
 function onCurrentScreenDetailsChanged() {
@@ -43,7 +43,7 @@ async function drawWebGPUCanvas(element_id, r, g, b) {
   context.configure({
     device: device,
     format: 'rgba16float',
-    colorSpace: 'srgb-linear',
+    colorSpace: 'display-p3',
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
     hdrOptions: {mode:'extended'},
   });
@@ -79,11 +79,11 @@ function main() {
     });
   })
 
-  drawWebGPUCanvas('WebGPUCanvas_60', 0.909, -0.010, -0.010);
-  drawWebGPUCanvas('WebGPUCanvas_70', 1.263,  0.041,  0.024);
-  drawWebGPUCanvas('WebGPUCanvas_80', 1.692,  0.127,  0.079);
-  drawWebGPUCanvas('WebGPUCanvas_90', 2.201,  0.250,  0.165);
-  drawWebGPUCanvas('WebGPUCanvas_99', 2.732,  0.399,  0.273);
+  drawWebGPUCanvas('WebGPUCanvas_60', 0.878, 0.144, 0.09);
+  drawWebGPUCanvas('WebGPUCanvas_70', 1.02, 0.317, 0.239);
+  drawWebGPUCanvas('WebGPUCanvas_80', 1.164, 0.46, 0.366);
+  drawWebGPUCanvas('WebGPUCanvas_90', 1.31, 0.597, 0.491);
+  drawWebGPUCanvas('WebGPUCanvas_99', 1.443, 0.719, 0.605);
 }
 </script>
 </head>
@@ -94,8 +94,15 @@ function main() {
 This requires that "Experimental Web Platform features" be enabled in chrome://flags.
 </p>
 
-<p id="DisplayValue">Screen HDR headroom: (unknown)</p>
-<p><button type="button" id="ButtonDetails">Query screen HDR headroom</button></p>
+<p>The following boxes show the rendering of the sequence of colors:</p>
+<ul>
+  <li>oklab(60% 0.225 0.126)</li>
+  <li>oklab(70% 0.225 0.126)</li>
+  <li>oklab(80% 0.225 0.126)</li>
+  <li>oklab(90% 0.225 0.126)</li>
+  <li>oklab(99% 0.225 0.126)</li>
+</ul>
+</p>
 
 <p>
 <canvas id="WebGPUCanvas_60" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
@@ -104,6 +111,15 @@ This requires that "Experimental Web Platform features" be enabled in chrome://f
 <canvas id="WebGPUCanvas_90" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
 <canvas id="WebGPUCanvas_99" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
 WebGPU rendering of true color
+</p>
+
+<p>
+<canvas style="width:32px; height:32px; background-color:oklab(60% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(70% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(80% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(90% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(99% 0.255 0.126);"></canvas>
+Browser rendering of color
 </p>
 
 <p>
@@ -116,13 +132,17 @@ CSS gamut mapping of color
 </p>
 
 <p>
-<canvas style="width:32px; height:32px; background-color:oklab(60% 0.255 0.126);"></canvas>
-<canvas style="width:32px; height:32px; background-color:oklab(70% 0.255 0.126);"></canvas>
-<canvas style="width:32px; height:32px; background-color:oklab(80% 0.255 0.126);"></canvas>
-<canvas style="width:32px; height:32px; background-color:oklab(90% 0.255 0.126);"></canvas>
-<canvas style="width:32px; height:32px; background-color:oklab(99% 0.255 0.126);"></canvas>
-Browser rendering of color
+This is to illustrate the danger of using colors that are far outside of the gamut of the display.
+<ul>
+<li>If you're on an HDR display, it's likely possible to render the true color, and you'll see it on the top row.</li>
+<li>The middle row shows how the color is rendered by your browser.</li>
+<li>The last row shows the CSS gamut mapping of the color to the P3 gamut.</li>
+</ul>
 </p>
+
+
+<p id="DisplayValue">Screen HDR headroom: (unknown)</p>
+<p><button type="button" id="ButtonDetails">Query screen HDR headroom</button></p>
 
 </body>
 </html>
