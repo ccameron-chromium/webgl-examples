@@ -1,0 +1,128 @@
+<html>
+<head>
+<script>
+var current_screen_details;
+var rendering_hdr_headroom = 1;
+
+// oklab(60% 0.225 0.126)
+//   color(srgb-linear 0.909 -0.01 -0.01)
+//   color(display-p3 0.878 0.144 0.09) -- no gamut mapping
+
+// oklab(70% 0.225 0.126)
+//   color(display-p3 1 0.317 0.239) -- gamut mapped
+//   color(srgb-linear 1.263 0.041 0.024)
+
+// oklab(80% 0.225 0.126)
+//   color(display-p3 1 0.564 0.465)
+//   color(srgb-linear 1.692 0.127 0.079)
+
+// oklab(90% 0.225 0.126)
+//   color(display-p3 1 0.774 0.71)
+//   color(srgb-linear 2.201 0.25 0.165)
+
+// oklab(99% 0.225 0.126)
+//   color(display-p3 1 0.942 0.923)
+//   color(srgb-linear 2.732 0.399 0.273)
+
+function onCurrentScreenDetailsChanged() {
+  let screen_hdr_headroom = current_screen_details.highDynamicRangeHeadroom;
+  document.getElementById('DisplayValue').innerText =
+      'Screen HDR headroom: ' + screen_hdr_headroom.toFixed(2) + '.';
+}
+
+// Clear the canvas to rendering_hdr_headroom using WebGPU.
+async function drawWebGPUCanvas(element_id, r, g, b) {
+  const canvas = document.getElementById(element_id);
+  const adapter = await navigator.gpu?.requestAdapter();
+  const device = await adapter?.requestDevice();
+  const context = canvas.getContext('webgpu')
+  if (!device || !context) {
+    console.error("Failed to initialize WebGPU");
+    return;
+  }
+  context.configure({
+    device: device,
+    format: 'rgba16float',
+    colorSpace: 'srgb-linear',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    hdrOptions: {mode:'extended'},
+  });
+
+  let v = rendering_hdr_headroom;
+  const renderPassDescriptor = {
+    colorAttachments: [
+      {
+        view: context.getCurrentTexture().createView(),
+        clearValue: { r:r, g:g, b:b, a: 1.0 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      },
+    ],
+  };
+
+  const commandEncoder = device.createCommandEncoder();
+  const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+  passEncoder.setViewport(0, 0, 32, 32, 0, 1);
+  passEncoder.end();
+  device.queue.submit([commandEncoder.finish()]);
+}
+
+function main() {
+  // Configure screen information listener.
+  ButtonDetails.addEventListener('click', async function screenDetails() {
+    const screens = await window.getScreenDetails();
+    current_screen_details = screens.currentScreen;
+    onCurrentScreenDetailsChanged();
+    screens.addEventListener('currentscreenchange', (event) => {
+      current_screen_details = screens.currentScreen;
+      onCurrentScreenDetailsChanged();
+    });
+  })
+
+  drawWebGPUCanvas('WebGPUCanvas_60', 0.909, -0.010, -0.010);
+  drawWebGPUCanvas('WebGPUCanvas_70', 1.263,  0.041,  0.024);
+  drawWebGPUCanvas('WebGPUCanvas_80', 1.692,  0.127,  0.079);
+  drawWebGPUCanvas('WebGPUCanvas_90', 2.201,  0.250,  0.165);
+  drawWebGPUCanvas('WebGPUCanvas_99', 2.732,  0.399,  0.273);
+}
+</script>
+</head>
+
+<body onload='main()'>
+
+<p>
+This requires that "Experimental Web Platform features" be enabled in chrome://flags.
+</p>
+
+<p id="DisplayValue">Screen HDR headroom: (unknown)</p>
+<p><button type="button" id="ButtonDetails">Query screen HDR headroom</button></p>
+
+<p>
+<canvas id="WebGPUCanvas_60" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
+<canvas id="WebGPUCanvas_70" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
+<canvas id="WebGPUCanvas_80" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
+<canvas id="WebGPUCanvas_90" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
+<canvas id="WebGPUCanvas_99" style="width:32px; height:32px; margin:0px; padding:0px;"></canvas>
+WebGPU rendering of true color
+</p>
+
+<p>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 0.878 0.144 0.09);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.317 0.239);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.564 0.465);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.774 0.71);"></canvas>
+<canvas style="width:32px; height:32px; background-color:color(display-p3 1 0.942 0.923);"></canvas>
+CSS gamut mapping of color
+</p>
+
+<p>
+<canvas style="width:32px; height:32px; background-color:oklab(60% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(70% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(80% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(90% 0.255 0.126);"></canvas>
+<canvas style="width:32px; height:32px; background-color:oklab(99% 0.255 0.126);"></canvas>
+Browser rendering of color
+</p>
+
+</body>
+</html>
