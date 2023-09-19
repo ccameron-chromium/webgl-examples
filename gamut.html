@@ -1669,7 +1669,7 @@ Geometric coordinate color space
 <div>
 HDR
 <label for="HdrHeadroom">Headroom</label>
-<input id="HdrHeadroom" type="range" min="1" max="4" step=0.01 value="2.0" oninput='onChange();' onchange='onChange();'/>
+<input id="HdrHeadroom" type="range" min="1" max="4" step=0.01 value="1.0" oninput='onChange();' onchange='onChange();'/>
 <output id="HdrHeadroomValue">1</output>
 </div>
 
@@ -1679,12 +1679,12 @@ HDR
 <div>
 Slicing plane:
 <label for="SliceAxis">Axis</label>
-<input id="SliceAxis" type="number" min="0" max="2" value="2" onchange='onChange();'/>
+<input id="SliceAxis" type="number" min="0" max="2" value="0" onchange='onChange();'/>
 
 <label for="SliceValue">Value</label>
-<input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.5" oninput='onChange();' onchange='onChange();'/>
+<input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.75" oninput='onChange();' onchange='onChange();'/>
 
-<input id="SliceFlip" type="checkbox" onchange='onChange();' checked/>
+<input id="SliceFlip" type="checkbox" onchange='onChange();'/>
 <label for="SliceFlip">Flip</label>
 </div>
 
@@ -1696,16 +1696,16 @@ Slice:
 <input type="radio" name="discard" onchange='onChange();' id="RadioSlice_None">
 <label for="RadioSlice_None">Nothing</label>
 
-<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_All">
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_All" checked>
 <label for="RadioSlice_All">Everything</label>
 
-<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_HDR" checked>
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_HDR">
 <label for="RadioSlice_HDR">HDR only</label>
 </div>
 
 <div>
 Slicing plane: 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto" checked>
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto">
 <label for="RadioPlane_Auto">Auto</label>
 
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_SDR">
@@ -1714,7 +1714,7 @@ Slicing plane:
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_HDR">
 <label for="RadioPlane_HDR">HDR</label>
 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane">
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane" checked>
 <label for="RadioPlane_Plane">Full</label>
 </div>
 </p>
