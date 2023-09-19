@@ -3,6 +3,12 @@
 </head>
 <script>
 
+var texture_color;
+var texture_normal;
+var texture_depth;
+var fbo;
+var fbo_width;
+var fbo_height;
 var texture_xyzd50_lambda;
 const data_xyzd50_lambda = new Float32Array([
     0.0001299   , 0.00000392  , 0.0006061  , 360 ,
@@ -445,7 +451,7 @@ var plane_wire_indices = [0, 0];
 var plane_wire_indices_count = [0, 0];
 
 var view_rotation_x = 15;
-var view_rotation_y = -15;
+var view_rotation_y = 35;
 
 let compileShader = function(gl, vertex_source, fragment_source) {
   let vertex_shader = gl.createShader(gl.VERTEX_SHADER);
@@ -472,7 +478,7 @@ let compileShader = function(gl, vertex_source, fragment_source) {
 
 const gamut_common = `
   const int kXYZ = 0;
-  const int kLinearLab = 7;
+  const int kRec2020YUV = 7;
   const int kSRGB = 1;
   const int kSRGBLinear = 2;
   const int kP3Linear = 6;
@@ -483,8 +489,6 @@ const gamut_common = `
   uniform sampler2D texture_xyzd50_lambda;
   uniform highp int input_position_type;
   uniform highp int output_position_type;
-  varying vec3 v_in_color;
-  varying vec3 v_out_color;
 
   mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
                             0.291965,  0.692236,   0.0418818,
@@ -543,7 +547,7 @@ const gamut_common = `
 
   vec3 xyzd50_to_oklab(vec3 xyzd50) {
     vec3 lms = xyzd65_to_lms * xyzd50_to_xyzd65 * xyzd50;
-    vec3 Lab = lms_to_oklab * pow(lms, vec3(1.0/3.0));
+    vec3 Lab = lms_to_oklab * pow(abs(lms), vec3(1.0/3.0));
     return Lab + vec3(0.0, 0.5, 0.5);
   }
 
@@ -554,25 +558,33 @@ const gamut_common = `
 
   vec3 lambda_to_xyzd50(vec3 c) {
     float lambda = c.x;
-    vec3 xyz = texture2D(texture_xyzd50_lambda, vec2(lambda, 0.0)).rgb;
-
-    vec3 t = xyzd50_to_xyzd65 * xyz;
-    float M = max(max(t.x, t.y), t.z);
-    return c.y * xyz / max(M, 1.0);
-    return c.y * xyz / max(max(xyz.x, xyz.y), xyz.z);
+    vec3 xyz = texture(texture_xyzd50_lambda, vec2(lambda, 0.0)).rgb;
+    return c.y * xyz;
   }
 
+  float parametricEval(float x, float a, float b, float c, float d, float e, float f, float g) {
+    float abs_x = abs(x);
+    float sgn_x = sign(x);
+    if (abs_x < d) {
+      return c * x + f;
+    }
+    return sgn_x * (pow(a * abs_x + b, g) + e);
+  }
   float srgbToLinear(float x) {
-    if (x < 0.0)
-      return 0.0;
-    if (x < 0.04045)
-      return x / 12.92;
-    return pow((x + 0.055)/1.044, 2.4);
+    const float a = 0.947867345704;
+    const float b = 0.052132654296;
+    const float c = 0.077399380805;
+    const float d = 0.040449937172;
+    const float g = 2.4;
+    return parametricEval(x, a, b, c, d, 0.0, 0.0, g);
   }
   float linearToSrgb(float x) {
-    if (x < 0.003130800090713953)
-      return 12.919999999992248*x;
-    return pow(1.1371188301409823*x, 0.4166666666666667) - 0.05499994754780801;
+    const float a = 1.1371188301409823;
+    const float c = 12.919999999992248;
+    const float d = 0.003130800090713953;
+    const float e = -0.05499994754780801;
+    const float g = 0.4166666666666667;
+    return parametricEval(x, a, 0.0, c, d, e, 0.0, g);
   }
   vec3 srgbToLinear(vec3 c) {
     return vec3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
@@ -586,82 +598,141 @@ const gamut_common = `
       return c;
     }
 
-    if (from == kSRGB) {
+    // Convert YUV to RGB.
+    if (from == kRec2020YUV) {
+      c = rec2020_yuv_to_rgb(c);
+    }
+
+    // Convert nonlinear to linear.
+    if (from == kSRGB || from == kRec2020YUV) {
       c  = srgbToLinear(c);
     }
+
+    // Convert primaries to XYZD50
     if (from == kSRGB || from == kSRGBLinear) {
       c = srgb_to_xyzd50 * c;
     }
-    if (from == kP3Linear) {
+    else if (from == kP3Linear) {
       c = p3_to_xyzd50 * c;
     }
-    if (from == kRec2020Linear) {
+    else if (from == kRec2020Linear || from == kRec2020YUV) {
       c = rec2020_to_xyzd50 * c;
     }
-    if (from == kOkLab) {
-      c = oklab_to_xyzd50(c);
-    }
+
+    // Direct-to-XYZD50 conversions.
     if (from == kWavelength) {
       c = lambda_to_xyzd50(c);
     }
-    vec3 lms_max = vec3(1.0629096,  1.       ,  1.7829682);
-    if (from == kLinearLab) {
-      c = c - vec3(0.0, 0.5, 0.5);
-      c = oklab_to_lms * c;
-      c = lms_to_xyzd65 * c;
-      c = xyzd65_to_xyzd50 * c;
+    else if (from == kOkLab) {
+      c = oklab_to_xyzd50(c);
     }
 
     // c is now xyzd50
 
-    if (to == kLinearLab) {
-      c = xyzd50_to_xyzd65 * c;
-      c = xyzd65_to_lms * c;
-      c = lms_to_oklab * c;
-      c = c + vec3(0.0, 0.5, 0.5);
-    }
-    if (to == kSRGB || to == kSRGBLinear) {
-      c = xyzd50_to_srgb * c;
-    }
-    if (to == kSRGB) {
-      c  = linearToSrgb(c);
-    }
-    if (to == kP3Linear) {
-      c = xyzd50_to_p3 * c;
-    }
-    if (to == kRec2020Linear) {
-      c = xyzd50_to_rec2020 * c;
-    }
+    // Direct-from-XYZD50 conversions.
     if (to == kOkLab) {
       c = xyzd50_to_oklab(c);
+    }
+
+    // Convert primaries from XYZD50
+    {
+      if (to == kSRGB || to == kSRGBLinear) {
+        c = xyzd50_to_srgb * c;
+      }
+      else if (to == kP3Linear) {
+        c = xyzd50_to_p3 * c;
+      }
+      else if (to == kRec2020Linear || to == kRec2020YUV) {
+        c = xyzd50_to_rec2020 * c;
+      }
+    }
+
+    // Convert linear to nonlinear.
+    if (to == kSRGB || to == kRec2020YUV) {
+      c  = linearToSrgb(c);
+    }
+
+    // Convert RGB to YUV.
+    if (to == kRec2020YUV) {
+      c = rec2020_rgb_to_yuv(c);
     }
 
     return c;
   }
 
   bool inGamut(vec3 c, int from, int to, float headroom) {
-    vec3 cp = convert(c, from, to);
-    return cp == clamp(cp, -0.001, headroom + 0.001);
+    vec3 converted = convert(c, from, to);
+    return converted == clamp(converted, 0.0, headroom);
   }
 
   bool inGamut(vec3 c, int from, int to) {
-    vec3 cp = convert(c, from, to);
-    return cp == clamp(cp, -0.001, 1.001);
+    return inGamut(c, from, to, 1.0);
   }
 
     `;
 
+const blit_vs = `
+    attribute vec2 position;
+    varying vec2 v_texcoord;
+
+    void main() {
+      v_texcoord.xy = (0.5 * position.xy) + 0.5;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+    `;
+
+const blit_fs = `
+    precision highp float;
+    uniform sampler2D texture_color;
+    uniform sampler2D texture_normal;
+    uniform sampler2D texture_depth;
+    uniform vec2 viewport;
+    varying vec2 v_texcoord;
+
+    float edgeDetect() {
+      float dx = 1.0 / viewport.x;
+      float dy = 1.0 / viewport.y;
+
+      vec3 n = 2.0 * (texture2D(texture_normal, v_texcoord).rgb - vec3(0.5, 0.5, 0.5));
+      for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+          float x = v_texcoord.x + float(i - 1) * dx;
+          float y = v_texcoord.y + float(j - 1) * dy;
+          vec3 n_ij = 2.0 * (texture2D(texture_normal, vec2(x,y)).rgb - vec3(0.5, 0.5, 0.5));
+          if (max(length(n), length(n_ij)) < 0.5) {
+            continue;
+          }
+          float cos_theta = dot(n, n_ij);
+          if (cos_theta < 0.9) {
+            return 1.0;
+          }
+        }
+      }
+      return 0.0;
+    }
+
+    void main() {
+      vec4 color = texture2D(texture_color, v_texcoord.xy);
+
+      color.rgb *= 1.0 - vec3(edgeDetect());
+
+      gl_FragColor.rgb = color.rgb;
+      gl_FragColor.a = 1.0;
+    }
+    `;
+
 const black_vs = `
-    uniform mat4 matrixModelViewProjection;
+    uniform mat4 matrixProjection;
+    uniform mat4 matrixModelView;
     uniform mat4 matrixSubModel;
     attribute vec4 position;
     varying float v_alpha;
 
     void main() {
       v_alpha = 0.25;
-      gl_Position = matrixModelViewProjection * matrixSubModel * position;
+      gl_Position = matrixProjection * matrixModelView * matrixSubModel * position;
     }
-    `
+    `;
 
 const black_fs = `
     precision highp float;
@@ -669,10 +740,11 @@ const black_fs = `
 
     void main() {
       gl_FragColor = vec4(0.0, 0.0, 0.0, v_alpha);
-    }`;
+    }
+    `;
 
 const kXYZ = 0;
-const kLinearLab = 7;
+const kRec2020YUV = 7;
 const kSRGB = 1;
 const kSRGBLinear = 2;
 const kP3Linear = 6;
@@ -680,20 +752,32 @@ const kRec2020Linear = 3;
 const kOkLab = 4;
 const kWavelength = 5;
 
-const gamut_vs = `
+const gamut_vs = `#version 300 es
     precision highp float;
-    uniform mat4 matrixModelViewProjection;
+    uniform mat4 matrixProjection;
+    uniform mat4 matrixModelView;
     uniform mat4 matrixSubModel;
-    attribute vec4 position;
-    attribute vec4 color;
+    in vec4 position;
+    in vec4 color;
+    out vec3 v_in_color;
+    out vec3 v_out_color;
+    out vec3 v_out_normal;
     ` + gamut_common + `
     void main() {
       v_in_color = (matrixSubModel * position).xyz;
       v_out_color = convert(v_in_color, input_position_type, output_position_type);
-      gl_Position = matrixModelViewProjection * vec4(v_out_color, 1.0);
+
+      // Use finite difference for normals because work is hard.
+      vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
+      vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
+      vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, output_position_type);
+
+      v_out_normal = normalize(out_color_fd_normal - v_out_color);
+
+      gl_Position = matrixProjection * matrixModelView * vec4(v_out_color, 1.0);
     }`;
 
-const gamut_fs = `
+const gamut_fs = `#version 300 es
     precision highp float;
     uniform vec4 color;
     uniform vec4 slice_vector;
@@ -701,6 +785,11 @@ const gamut_fs = `
     uniform highp int gamut_map_discard;
     uniform highp int gamut_map_type;
     uniform float gamut_map_headroom;
+    in vec3 v_in_color;
+    in vec3 v_out_color;
+    in vec3 v_out_normal;
+    layout(location = 0) out vec4 f_out_color;
+    layout(location = 1) out vec4 f_out_normal;
     ` + gamut_common + `
     void main() {
       vec3 srgb_color = convert(v_in_color, input_position_type, kSRGB);
@@ -709,13 +798,6 @@ const gamut_fs = `
       // Discard based on slicing.
       if (dot(slice_vector, vec4(v_out_color, 1.0)) < 0.0) {
         discard;
-      }
-
-      // Discard
-      if (gamut_map_discard == 1) {
-        if (!inGamut(v_in_color, input_position_type, gamut_map_space, gamut_map_headroom)) {
-          discard;
-        }
       }
 
       // Gamut map
@@ -762,8 +844,19 @@ const gamut_fs = `
         }
       }
 
-      gl_FragColor.rgb = clamp(color.rgb * srgb_color, 0.0, 16.0);
-      gl_FragColor.a = 1.0;
+      f_out_color.rgb = clamp(color.rgb * srgb_color, 0.0, 16.0);
+      f_out_color.a = 1.0;
+
+      f_out_normal.rgb = 0.5 * normalize(v_out_normal) + vec3(0.5);
+      f_out_normal.a = 1.0;
+
+      // Discard
+      if (gamut_map_discard == 1) {
+        if (!inGamut(v_in_color, input_position_type, gamut_map_space, gamut_map_headroom)) {
+          discard;
+        }
+      }
+
     }`;
 
 let matrixOrtho2D = function(left, right, bottom, top, znear, zfar) {
@@ -883,18 +976,20 @@ let matrixConcat = function(a) {
 const kGrid1x1   = 0;
 const kGrid4x4   = 1;
 const kGrid16x16 = 2;
-const kGrid32x32 = 2;
+const kGrid32x32 = 3;
+const kGrid32x8 = 4;
 
 let makePlane = function() {
   // n = 17
   // 6 * (17x17 + 16x16)
   const n = 129;
-  let nGrids = 4;
+  let nGrids = 5;
   let steps = [
-    n-1,        // kGrid1x1
-    (n-1) / 4,  // kGrid4x4
-    (n-1) / 16, // kGrid16x16
-    (n-1) / 32, // kGrid32x32
+    [(n-1) /  1, (n-1) /  1], // kGrid1x1
+    [(n-1) /  4, (n-1) /  4], // kGrid4x4
+    [(n-1) / 16, (n-1) / 16], // kGrid16x16
+    [(n-1) / 32, (n-1) / 32], // kGrid32x32
+    [(n-1) / 32, (n-1) /  8], // kGrid32x8
     ];
 
   {
@@ -949,14 +1044,15 @@ let makePlane = function() {
     let nLines = 2 * n * n;
     let indices = new Uint16Array(2 * nLines);
     let i = 0;
-    let step = steps[grid_index];
+    let step_x = steps[grid_index][0];
+    let step_y = steps[grid_index][1];
     for (let x = 0; x < n-1; x += 1) {
-      for (let y = 0; y < n; y += step) {
+      for (let y = 0; y < n; y += step_y) {
         indices[i++] = (y+0)*n + (x+0);
         indices[i++] = (y+0)*n + (x+1);
       }
     }
-    for (let x = 0; x < n; x += step) {
+    for (let x = 0; x < n; x += step_x) {
       for (let y = 0; y < n-1; y += 1) {
         indices[i++] = (y+0)*n + (x+0);
         indices[i++] = (y+1)*n + (x+0);
@@ -1022,49 +1118,45 @@ let moveElementToPoint = function(element, matrix, point) {
   let r = canvas.getBoundingClientRect();
   
   element.style.left = (r.left + a0x) + 'px';
-  element.style.top  = (r.top  + a0y) + 'px';
+  element.style.top  = (r.top + window.scrollY + a0y) + 'px';
 }
 
-let draw = function() {
-  canvas.width  = 640;
-  canvas.height = 480;
-  canvas.style = 'width:640px; height:480px; border:1px solid black;';
-  gl.viewport(0, 0, canvas.width, canvas.height);
+let drawToFbo = function(width, height) {
+  gl.viewport(0, 0, width, height);
 
-  gl.clearColor(1.0, 1.0, 1.0, 1.0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+
+  gl.clearBufferfv(gl.COLOR, 0, [1.0, 1.0, 1.0, 1.0]);
+  gl.clearBufferfv(gl.COLOR, 1, [0.5, 0.5, 0.5, 0.0]);
+
   gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  // gl.enable(gl.CULL_FACE);
 
-  let matrixModelViewProjection = null;
+  let matrixProjection = null;
+  let matrixModelView = null;
+  {
+    matrixProjection = matrixPerspective(5, width / height, 2, 6);
+    // matrixProjection = matrixOrtho2D(-width / height, width / height, -1.0, 1.0, -2.0, 2.0);
+  }
   {
     let matrices = []
-    matrices.push(matrixPerspective(5, canvas.width / canvas.height, 2, 6));
     matrices.push(matrixTranslation(0, 0, -4));
-    if (0) {
-      matrices.push(matrixRotation('y', view_rotation_y));
-    } else {
-      matrices.push(matrixRotation('x', view_rotation_x));
-      matrices.push(matrixRotation('y', view_rotation_y));
-    }
+    matrices.push(matrixRotation('x', view_rotation_x));
+    matrices.push(matrixRotation('y', view_rotation_y));
 
     matrices.push([ 0, 1, 0, 0,
                      -1,  0, 0, 0,
                       0,  0, 1, 0,
                       0,  0, 0, 1]);
-    if (0) {
-      matrices.push(matrixTranslation(-1, 0, 0));
-      matrices.push(matrixRotation('y', 55));
-      matrices.push(matrixRotation('x', 45));
-    } else {
-      matrices.push(matrixTranslation(-0.5, -0.5, -0.5));
-    }
+    matrices.push(matrixTranslation(-0.5, -0.5, -0.5));
 
-    matrixModelViewProjection = matrixConcat(matrices);
+    matrixModelView = matrixConcat(matrices);
   }
 
+  const matrixModelViewProjection = matrixConcat([matrixProjection, matrixModelView]);
   moveElementToPoint(AxisOrigin,  matrixModelViewProjection, [0, 0, 0, 1]);
   moveElementToPoint(Axis0,     matrixModelViewProjection, [1, 0, 0, 1]);
   moveElementToPoint(Axis1,     matrixModelViewProjection, [0, 1, 0, 1]);
@@ -1083,7 +1175,7 @@ let draw = function() {
     Axis0.innerText = 'R'; Axis1.innerText = 'G'; Axis2.innerText = 'B';
     out_space = kRec2020Linear;
   }
-  if (RadioGeo_OkLab.checked || RadioGeo_LinearLab.checked) {
+  if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked) {
     moveElementToPoint(AxisOrigin, matrixModelViewProjection, [-0.08, 0.5, 0.5, 1]);
     moveElementToPoint(Axis0,      matrixModelViewProjection, [1, 0.5, 0.5, 1]);
     moveElementToPoint(Axis1,      matrixModelViewProjection, [0, 1,   0.5, 1]);
@@ -1092,12 +1184,14 @@ let draw = function() {
 
     if (RadioGeo_OkLab.checked)
       out_space = kOkLab;
-    if (RadioGeo_LinearLab.checked)
-      out_space = kLinearLab;
   }
   if (RadioGeo_XYZ.checked) {
     Axis0.innerText = 'X'; Axis1.innerText = 'Y'; Axis2.innerText = 'Z';
     out_space = kXYZ;
+  }
+  if (RadioGeo_Rec2020YUV.checked) {
+    Axis0.innerText = 'Y'; Axis1.innerText = 'U'; Axis2.innerText = 'V';
+    out_space = kRec2020YUV;
   }
 
   let gamut_space = kSRGB;
@@ -1106,10 +1200,10 @@ let draw = function() {
   if (RadioVolume_Rec2020.checked)       gamut_space = kRec2020Linear;
 
   gl.useProgram(gamut_program);
-  gl.uniformMatrix4fv(
-      gl.getUniformLocation(gamut_program, 'matrixModelViewProjection'),
-      false,
-      matrixModelViewProjection);
+  gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixProjection'), false,
+                      matrixProjection);
+  gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixModelView'), false,
+                      matrixModelView);
   gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
 
   gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
@@ -1135,8 +1229,18 @@ let draw = function() {
     slice_vector = [0, 0, 0, -SliceValue.value];
     slice_vector[SliceAxis.value] = 1;
   }
-  no_slice_vector = [0, 0, 0, 1.0];
-    
+  let no_slice_vector = [0, 0, 0, 1.0];
+  let flip_slice_vector = [-slice_vector[0], -slice_vector[1], -slice_vector[2], -slice_vector[3]];
+
+  if (SliceFlip.checked) {
+    let temp = flip_slice_vector;
+    flip_slice_vector = slice_vector;
+    slice_vector = temp;
+  }
+
+  const draw_sdr_solid = GamutRender_Solid.checked || GamutRender_SdrSolid_HdrWireframe.checked;
+  const draw_hdr_solid = GamutRender_Solid.checked;
+
   // Draw the gamut
   {
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), gamut_space);
@@ -1144,82 +1248,72 @@ let draw = function() {
     // Solid
     {
       gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
-      gl.enable(gl.POLYGON_OFFSET_FILL);
-      gl.polygonOffset(2, 2);
 
       // SDR
-      if (GamutRender_Solid.checked) {
+      const slice_sdr = draw_sdr_solid && RadioSlice_All.checked;
+      if (draw_sdr_solid) {
         gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
-                      GamutRender_SliceSolid.checked ? slice_vector : no_slice_vector);
+                      slice_sdr ? slice_vector : no_slice_vector);
         drawCube(gamut_program, null, 1.0);
       }
 
       // HDR
-      if (HdrGamutRender_Solid.checked) {
+      const slice_hdr = draw_hdr_solid && (RadioSlice_HDR.checked || RadioSlice_All.checked);
+      if (draw_hdr_solid) {
         gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
-                      HdrGamutRender_SliceSolid.checked ? slice_vector : no_slice_vector);
+                      slice_hdr ? slice_vector : no_slice_vector);
         drawCube(gamut_program, null, HdrHeadroom.value);
       }
-
-      gl.disable(gl.POLYGON_OFFSET_FILL);
     }
 
-    // Wireframe
-    {
-      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [0, 0, 0, 1]);
-
-      // SDR
+    // Don't draw the slicing plane in auto mode if:
+    // - we're looking at the wireframe
+    // - we're not slicing anything
+    let draw_plane = true;
+    if (RadioPlane_Auto.checked) {
+      if (RadioSlice_None.checked) {
+        draw_plane = false;
+      }
       if (GamutRender_Wireframe.checked) {
-        gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
-                      GamutRender_SliceWireframe.checked ? slice_vector : no_slice_vector);
-        drawCube(gamut_program, kGrid1x1, 1.0);
-      }
-
-      // HDR
-      if (HdrGamutRender_Wireframe.checked) {
-        gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
-                      HdrGamutRender_SliceWireframe.checked ? slice_vector : no_slice_vector);
-        drawCube(gamut_program, kGrid1x1, HdrHeadroom.value);
+        draw_plane = false;
       }
     }
-  }
 
-  // Draw the spectrum
-  if (!RadioSpectrum_None.checked) {
-    if (SliceSpectrum.checked) {
-      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), slice_vector);
-    } else {
-      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
-    }
+    if (draw_plane) {
+      // Draw the full plane only when selected.
+      let gamut_map_discard = true;
+      if (RadioPlane_Plane.checked) {
+        gamut_map_discard = false;
+      }
 
-    if (RadioSpectrum_Wire.checked) {
-      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [0, 0, 0, 1]);
-    } else {
-      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
-    }
-    gl.uniform1i(
-        gl.getUniformLocation(gamut_program, 'input_position_type'),
-        kWavelength);
-    drawGrid(gamut_program, kGrid32x32);
-  }
+      // Determine if we're drawing the big plane or small plane.
+      let gamut_map_headroom = 1.0;
+      if (RadioPlane_HDR.checked) {
+        // Explicity requested.
+        gamut_map_headroom = HdrHeadroom.value;
+      }
+      if (RadioPlane_Auto.checked) {
+        // In auto mode and we're both rendering and slicing the HDR gamut.
+        if (GamutRender_Solid.checked) {
+          if (RadioSlice_HDR.checked || RadioSlice_All.checked) {
+            gamut_map_headroom = HdrHeadroom.value;
+          }
+        }
+      }
 
-  // Draw the slicing plane.
-  {
+      let plane_scale = 1.0;
+      if (!RadioPlane_Plane.checked) {
+        plane_scale = Math.max(gamut_map_headroom, 4.0);
+      }
+
+
+    // Draw the slicing plane.
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), out_space);
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_space'), gamut_space);
-
     gl.uniform1f(gl.getUniformLocation(gamut_program, 'gamut_map_headroom'),
-        RadioDiscard_HDR.checked ? HdrHeadroom.value : 1.0);
+                 gamut_map_headroom);
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'),
-                 RadioDiscard_SDR.checked || RadioDiscard_HDR.checked);
-
-    let scale = RadioDiscard_HDR.checked ? HdrHeadroom.value : 1.0;
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false,
-        matrixConcat([
-            matrixIdentity(),
-            matrixRotation('x', 45),
-            matrixScale(1, Math.sqrt(2), Math.sqrt(2)),
-            matrixTranslation(0, 0, 0) ]));
+                 gamut_map_discard);
 
     let matrices = [matrixIdentity()]
     if (SliceAxis.value == 0) {
@@ -1233,42 +1327,156 @@ let draw = function() {
     if (SliceAxis.value == 2) {
       matrices.push(matrixTranslation(0, 0, SliceValue.value));
     }
-    matrices.push(matrixTranslation( 0,  0.5, 0));
-    matrices.push(matrixScale(scale, scale, scale));
-    matrices.push(matrixTranslation( 0, -0.5, 0));
+    matrices.push(matrixTranslation( 0.5,  0.5, 0));
+    matrices.push(matrixScale(plane_scale,
+                              plane_scale,
+                              plane_scale));
+    matrices.push(matrixTranslation(-0.5, -0.5, 0));
+
+    if (SliceAxis.value == 1) {
+      matrices.push(matrixTranslation(1, 0, 0));
+      matrices.push(matrixScale(-1, 1, 1));
+    }
     
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false,
-        matrixConcat(matrices));
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixConcat(matrices));
 
     gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
     drawPlane(gamut_program);
+    }
 
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false,
-        matrixIdentity());
-
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
+
+  }
+
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+
+  {
+    // Wireframe
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [0, 0, 0, 0]);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), gamut_space);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+
+    // SDR
+    // - draw when using wireframe
+    // - draw, sliced, when slicing SDR
+    if (GamutRender_Wireframe.checked || RadioSlice_All.checked) {
+      let slice = !GamutRender_Wireframe.checked;
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
+                    slice ? flip_slice_vector : no_slice_vector);
+      drawCube(gamut_program, kGrid1x1, 1.0);
+    }
+
+    // HDR
+    let hdr_wire_draw = true;
+    if (HdrHeadroom.value == 1.0) {
+      // When headroom is 1, this is redundant with SDR.
+      hdr_wire_draw = false;
+    }
+    if (GamutRender_Solid.checked) {
+      if (!RadioSlice_HDR.checked && !RadioSlice_All.checked) {
+        hdr_wire_draw = false;
+      }
+    }
+    if (hdr_wire_draw) {
+      let slice = !(GamutRender_Wireframe.checked || GamutRender_SdrSolid_HdrWireframe.checked);
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
+                    slice ? flip_slice_vector : no_slice_vector);
+      drawCube(gamut_program, kGrid1x1, HdrHeadroom.value);
+    }
+  }
+
+  // Draw the spectrum
+  if (!RadioSpectrum_None.checked) {
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), kWavelength);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture_xyzd50_lambda);
+
+    if (SliceSpectrum.checked) {
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), slice_vector);
+    } else {
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
+    }
+
+    if (RadioSpectrum_Wire.checked) {
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [0, 0, 0, 1]);
+    } else {
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
+    }
+    drawGrid(gamut_program, kGrid32x8);
   }
 
   // Draw the coordinate system.
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
   {
     gl.useProgram(black_program);
-    gl.uniformMatrix4fv(
-        gl.getUniformLocation(black_program, 'matrixModelViewProjection'),
-        false,
-        matrixModelViewProjection);
+    gl.uniformMatrix4fv(gl.getUniformLocation(black_program, 'matrixProjection'), false,
+                        matrixProjection);
+    gl.uniformMatrix4fv(gl.getUniformLocation(black_program, 'matrixModelView'), false,
+                        matrixModelView);
     drawCube(black_program, kGrid1x1);
   }
-
-/*
-  gl.uniformMatrix4fv(gl.getUniformLocation(black_program, 'matrixSubModel'), false,
-      matrixConcat([
-          matrixIdentity(),
-          matrixRotation('x', 45),
-          matrixScale(1, Math.sqrt(2), Math.sqrt(2)),
-          matrixTranslation(0, 0, 0) ]));
-  drawGrid(black_program, 0);
-*/
 }
+
+let draw = function() {
+  canvas.width  = fbo_width;
+  canvas.height = fbo_height;
+  canvas.style = 'width:640px; height:480px; border:1px solid black;';
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  drawToFbo(fbo_width, fbo_height);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.drawBuffers([gl.BACK]);
+
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+
+  gl.useProgram(blit_program);
+
+  if (1)
+  {
+    let positions = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positions);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+
+    let positionLocation = gl.getAttribLocation(blit_program, 'position');
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(positionLocation);
+
+    let indices = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
+
+    gl.uniform2fv(gl.getUniformLocation(blit_program, 'viewport'), [640, 480]);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture_color);
+    gl.uniform1i(gl.getUniformLocation(blit_program, 'texture_color'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texture_normal);
+    gl.uniform1i(gl.getUniformLocation(blit_program, 'texture_normal'), 1);
+ 
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, texture_depth);
+    gl.uniform1i(gl.getUniformLocation(blit_program, 'texture_depth'), 2);
+
+    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+  }
+
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
 
 function doMouseDown(evt) {
   if (dragging)
@@ -1325,6 +1533,7 @@ let makeSpectrum = function() {
 }
 
 let onChange = function() {
+  HdrHeadroomValue.value = HdrHeadroom.value;
   draw();
 }
 
@@ -1335,7 +1544,8 @@ let initializeGL = function() {
 
   let warningsText = '';
   gl = canvas.getContext('webgl2');
-  gl.getExtension('EXT_color_buffer_half_float');
+  gl.getExtension('EXT_color_buffer_float');
+  // gl.getExtension('WEBGL_depth_texture');
   if (`drawingBufferStorage` in gl) {
     gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
   } else {
@@ -1356,10 +1566,52 @@ let initializeGL = function() {
     warnings.style = 'color:#BC0000;';
     warnings.innerHTML = '<strong>' + warningsText + '</strong>';
 
-    // Force fallback to simulated HDR!
+    // Force fallback to simulated HDR?!?!?
+  }
+
+  {
+    fbo_width = 640;
+    fbo_height = 480;
+
+    texture_color = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture_color);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, fbo_width, fbo_height, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+    texture_normal = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture_normal);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fbo_width, fbo_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+
+    texture_depth = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture_depth);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, fbo_width, fbo_height, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture_color, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, texture_normal, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, texture_depth, 0);
+    if (gl.FRAMEBUFFER_COMPLETE != gl.checkFramebufferStatus(gl.FRAMEBUFFER)) {
+      throw('Incomplete framebuffer');
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   makeSpectrum();
+
+  blit_program = compileShader(gl, blit_vs, blit_fs);
   black_program = compileShader(gl, black_vs, black_fs);
   gamut_program = compileShader(gl, gamut_vs, gamut_fs);
   makePlane();
@@ -1376,6 +1628,9 @@ function main() {
 <p id='Warnings' hidden=true></p>
 
 <p>
+<b>Gamut</b>
+
+<div>
 Gamut volume color space
 
 <input type="radio" name="volume" onchange='onChange();' id="RadioVolume_sRGB">
@@ -1386,13 +1641,10 @@ Gamut volume color space
 
 <input type="radio" name="volume" onchange='onChange();' id="RadioVolume_Rec2020">
 <label for="RadioVolume_Rec2020">Rec2020</label>
-</p>
+</div>
 
-<p>
-</p>
-
-<p>
-Geometry color space
+<div>
+Geometric coordinate color space
 
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_sRGB">
 <label for="RadioGeo_sRGB">sRGB</label>
@@ -1409,74 +1661,79 @@ Geometry color space
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_XYZ">
 <label for="RadioGeo_XYZ">XYZD50</label>
 
-<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_LinearLab">
-<label for="RadioGeo_LinearLab">Linear Lab</label>
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_Rec2020YUV">
+<label for="RadioGeo_Rec2020YUV">Rec2020 YUV</label>
+</div>
 </p>
 
-<p>
-Gamut rendering:
-
-<input id="GamutRender_Solid" type="checkbox" onchange='onChange();' checked/>
-<label for="GamutRender_Solid">Solid</label>
-
-<input id="GamutRender_Wireframe" type="checkbox" onchange='onChange();' checked/>
-<label for="GamutRender_Wireframe">Wireframe</label>
-
-<input id="GamutRender_SliceSolid" type="checkbox" onchange='onChange();' checked/>
-<label for="GamutRender_SliceSolid">Slice Solid</label>
-
-<input id="GamutRender_SliceWireframe" type="checkbox" onchange='onChange();'/>
-<label for="GamutRender_SliceWireframe">Slice Wireframe</label>
-
-</p>
-
-<p>
-HDR Gamut rendering:
-
-<input id="HdrGamutRender_Solid" type="checkbox" onchange='onChange();'/>
-<label for="HdrGamutRender_Solid">Solid</label>
-
-<input id="HdrGamutRender_Wireframe" type="checkbox" onchange='onChange();' checked/>
-<label for="HdrGamutRender_Wireframe">Wireframe</label>
-
-<input id="HdrGamutRender_SliceSolid" type="checkbox" onchange='onChange();' checked/>
-<label for="HdrGamutRender_SliceSolid">Slice Solid</label>
-
-<input id="HdrGamutRender_SliceWireframe" type="checkbox" onchange='onChange();'/>
-<label for="HdrGamutRender_SliceWireframe">Slice Wireframe</label>
-</p>
-
-
-<p>
+<div>
 HDR
 <label for="HdrHeadroom">Headroom</label>
-<input id="HdrHeadroom" type="range" min="1" max="4" step=0.001 value="1" oninput='onChange();' onchange='onChange();'/>
-</p>
-
+<input id="HdrHeadroom" type="range" min="1" max="4" step=0.01 value="2.0" oninput='onChange();' onchange='onChange();'/>
+<output id="HdrHeadroomValue">1</output>
+</div>
 
 <p>
-Slice
+<b>Rendering</b>
 
+<div>
+Slicing plane:
 <label for="SliceAxis">Axis</label>
-<input id="SliceAxis" type="number" min="0" max="2" value="0" onchange='onChange();'/>
+<input id="SliceAxis" type="number" min="0" max="2" value="2" onchange='onChange();'/>
 
 <label for="SliceValue">Value</label>
-<input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.75" oninput='onChange();' onchange='onChange();'/>
+<input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.5" oninput='onChange();' onchange='onChange();'/>
 
-Discard:
-<input type="radio" name="discard" onchange='onChange();' id="RadioDiscard_None" checked>
-<label for="RadioDiscard_None">None</label>
+<input id="SliceFlip" type="checkbox" onchange='onChange();' checked/>
+<label for="SliceFlip">Flip</label>
+</div>
 
-<input type="radio" name="discard" onchange='onChange();' id="RadioDiscard_SDR">
-<label for="RadioDiscard_SDR">SDR</label>
-
-<input type="radio" name="discard" onchange='onChange();' id="RadioDiscard_HDR">
-<label for="RadioDiscard_HDR">HDR</label>
 
 </p>
-<p>
-Gamut map: 
 
+<div>
+Slice:
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_None">
+<label for="RadioSlice_None">Nothing</label>
+
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_All">
+<label for="RadioSlice_All">Everything</label>
+
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_HDR" checked>
+<label for="RadioSlice_HDR">HDR only</label>
+</div>
+
+<div>
+Slicing plane: 
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto" checked>
+<label for="RadioPlane_Auto">Auto</label>
+
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_SDR">
+<label for="RadioPlane_SDR">SDR</label>
+
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_HDR">
+<label for="RadioPlane_HDR">HDR</label>
+
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane">
+<label for="RadioPlane_Plane">Full</label>
+</div>
+</p>
+
+<div>
+Gamut:
+
+<input type="radio" name="gamut" onchange='onChange();' id="GamutRender_Wireframe">
+<label for="GamutRender_Wireframe">Wire</label>
+
+<input type="radio" name="gamut" onchange='onChange();' id="GamutRender_SdrSolid_HdrWireframe" checked>
+<label for="GamutRender_SdrSolid_HdrWireframe">SDR (HDR wire)</label>
+
+<input type="radio" name="gamut" onchange='onChange();' id="GamutRender_Solid">
+<label for="GamutRender_Solid">HDR (and SDR)</label>
+</div>
+
+<div>
+Gamut mapping:
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_None" checked>
 <label for="RadioGamutMap_None">None</label>
 
@@ -1488,14 +1745,13 @@ Gamut map:
 
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_Clamp">
 <label for="RadioGamutMap_Clamp">Clamp</label>
+</div>
 
-</p>
-
-<p>
-Spectral colors
+<div>
+Spectral colors:
 
 <input type="radio" name="spectrum" onchange='onChange();' id="RadioSpectrum_None" checked>
-<label for="RadioSpectrum_None">None</label>
+<label for="RadioSpectrum_None">Hide</label>
 
 <input type="radio" name="spectrum" onchange='onChange();' id="RadioSpectrum_Wire">
 <label for="RadioSpectrum_Wire">Wire</label>
@@ -1503,11 +1759,11 @@ Spectral colors
 <input type="radio" name="spectrum" onchange='onChange();' id="RadioSpectrum_Color">
 <label for="RadioSpectrum_Color">Color</label>
 
-<input id="SliceSpectrum" type="checkbox" onchange='onChange();'/>
-<label for="SliceSpectrum">Slice</label>
-</p>
+<input hidden id="SliceSpectrum" type="checkbox" onchange='onChange();'/>
+<label hidden for="SliceSpectrum">Slice</label>
+</div>
 
-
+<p>
 <div id="wrapper">
   <p id="AxisOrigin" style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">0</p>
   <p id="Axis0"      style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">R</p>
@@ -1517,6 +1773,7 @@ Spectral colors
 <canvas id='Canvas' width='640' height='480'>
 </canvas>
 </div>
+</p>
 
 </body>
 </html>
