@@ -726,20 +726,18 @@ const black_vs = `
     uniform mat4 matrixModelView;
     uniform mat4 matrixSubModel;
     attribute vec4 position;
-    varying float v_alpha;
 
     void main() {
-      v_alpha = 0.25;
       gl_Position = matrixProjection * matrixModelView * matrixSubModel * position;
     }
     `;
 
 const black_fs = `
     precision highp float;
-    varying float v_alpha;
+    uniform vec4 color;
 
     void main() {
-      gl_FragColor = vec4(0.0, 0.0, 0.0, v_alpha);
+      gl_FragColor = color;
     }
     `;
 
@@ -1131,8 +1129,8 @@ let drawToFbo = function(width, height) {
 
   gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  // gl.enable(gl.BLEND);
+  // gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   // gl.enable(gl.CULL_FACE);
 
   let matrixProjection = null;
@@ -1417,6 +1415,7 @@ let drawToFbo = function(width, height) {
                         matrixProjection);
     gl.uniformMatrix4fv(gl.getUniformLocation(black_program, 'matrixModelView'), false,
                         matrixModelView);
+    gl.uniform4fv(gl.getUniformLocation(black_program, 'color'), [0.25, 0.25, 0.25, 1.0]);
     drawCube(black_program, kGrid1x1);
   }
 }
@@ -1543,9 +1542,8 @@ let initializeGL = function() {
   canvas.addEventListener("mousedown", doMouseDown, false);
 
   let warningsText = '';
-  gl = canvas.getContext('webgl2');
+  gl = canvas.getContext('webgl2',  {antialias:false});
   gl.getExtension('EXT_color_buffer_float');
-  // gl.getExtension('WEBGL_depth_texture');
   if (`drawingBufferStorage` in gl) {
     gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
   } else {
