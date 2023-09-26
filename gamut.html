@@ -1311,6 +1311,7 @@ let drawToFbo = function(width, height) {
                  gamut_map_headroom);
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'),
                  gamut_map_discard);
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
 
     let matrices = [matrixIdentity()]
     if (SliceAxis.value == 0) {
