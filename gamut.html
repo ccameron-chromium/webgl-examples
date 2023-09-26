@@ -756,22 +756,23 @@ const gamut_vs = `#version 300 es
     uniform mat4 matrixSubModel;
     in vec4 position;
     in vec4 color;
-    out vec3 v_in_color;
-    out vec3 v_out_color;
-    out vec3 v_out_normal;
+    out vec3 v_xyzd50;
+    out vec3 v_position;
+    out vec3 v_normal;
     ` + gamut_common + `
     void main() {
-      v_in_color = (matrixSubModel * position).xyz;
-      v_out_color = convert(v_in_color, input_position_type, output_position_type);
+      v_xyzd50 = (matrixSubModel * position).xyz;
+      v_xyzd50 = convert(v_xyzd50, input_position_type, kXYZ);
+      v_position = convert(v_xyzd50, kXYZ, output_position_type);
 
       // Use finite difference for normals because work is hard.
       vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
       vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
       vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, output_position_type);
 
-      v_out_normal = normalize(out_color_fd_normal - v_out_color);
+      v_normal = normalize(out_color_fd_normal - v_position);
 
-      gl_Position = matrixProjection * matrixModelView * vec4(v_out_color, 1.0);
+      gl_Position = matrixProjection * matrixModelView * vec4(v_position, 1.0);
     }`;
 
 const gamut_fs = `#version 300 es
@@ -782,32 +783,38 @@ const gamut_fs = `#version 300 es
     uniform highp int gamut_map_discard;
     uniform highp int gamut_map_type;
     uniform float gamut_map_headroom;
-    in vec3 v_in_color;
-    in vec3 v_out_color;
-    in vec3 v_out_normal;
+    in vec3 v_xyzd50;
+    in vec3 v_position;
+    in vec3 v_normal;
     layout(location = 0) out vec4 f_out_color;
     layout(location = 1) out vec4 f_out_normal;
     ` + gamut_common + `
     void main() {
-      vec3 srgb_color = convert(v_in_color, input_position_type, kSRGB);
+      vec3 srgb_color = convert(v_xyzd50, kXYZ, kSRGB);
       vec3 srgb_color_clamped = clamp(srgb_color, 0.0, 1.0);
 
       // Discard based on slicing.
-      if (dot(slice_vector, vec4(v_out_color, 1.0)) < 0.0) {
+      if (dot(slice_vector, vec4(v_position, 1.0)) < 0.0) {
         discard;
+      }
+      // Discard out-of-gamut.
+      if (gamut_map_discard == 1) {
+        if (!inGamut(v_xyzd50, kXYZ, gamut_map_space, gamut_map_headroom)) {
+          discard;
+        }
       }
 
       // Gamut map
       if (gamut_map_type != 0) {
         // CSS
         if (gamut_map_type == 1) {
-          vec3 c = convert(v_in_color, input_position_type, kRec2020Linear);
+          vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
           c = clamp(c, 0.0, 1.0);
           srgb_color = convert(c, kRec2020Linear, kSRGB);
         }
         if (gamut_map_type == 2) {
-          if (!inGamut(v_in_color, input_position_type, gamut_map_space)) {
-            vec3 Lab = convert(v_in_color, input_position_type, kOkLab);
+          if (!inGamut(v_xyzd50, kXYZ, gamut_map_space)) {
+            vec3 Lab = convert(v_xyzd50, kXYZ, kOkLab);
             vec3 Loo = vec3(min(Lab.x, 1.0), 0.5, 0.5);
             float alpha0 = 0.0;
             float alpha1 = 1.0;
@@ -827,7 +834,7 @@ const gamut_fs = `#version 300 es
         }
         // ISO
         if (gamut_map_type == 3) {
-          vec3 c = convert(v_in_color, input_position_type, kRec2020Linear);
+          vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
           float M = max(max(c.r, c.g), c.b);
           if (M > 1.0) {
             vec3 u = vec3(1.0, 1.0, 1.0);
@@ -844,15 +851,9 @@ const gamut_fs = `#version 300 es
       f_out_color.rgb = clamp(color.rgb * srgb_color, 0.0, 16.0);
       f_out_color.a = 1.0;
 
-      f_out_normal.rgb = 0.5 * normalize(v_out_normal) + vec3(0.5);
+      f_out_normal.rgb = 0.5 * normalize(v_normal) + vec3(0.5);
       f_out_normal.a = 1.0;
 
-      // Discard
-      if (gamut_map_discard == 1) {
-        if (!inGamut(v_in_color, input_position_type, gamut_map_space, gamut_map_headroom)) {
-          discard;
-        }
-      }
 
     }`;
 
