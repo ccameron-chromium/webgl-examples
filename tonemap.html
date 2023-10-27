@@ -362,6 +362,12 @@ const fs = `
     if (transfer == 1) {
       c = vec3(hlgOetfInv(c.r), hlgOetfInv(c.g), hlgOetfInv(c.b));
     }
+    if (transfer == 2) {
+      c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
+
+      float Y = rec2020_rgb_to_yuv(c).r / ndwl_white_nits;
+      c *= pow(Y, 1.0/1.2 - 1.0);
+    }
 
     // Convert from image primaries to rec2020 primaries.
     if (primaries == 0) {
@@ -711,6 +717,9 @@ let draw = function() {
   if (RadioHLG.checked) {
     gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 1);
   }
+  if (RadioPQG.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 2);
+  }
 
   if (RadioSRGB.checked) {
     gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 0);
@@ -783,6 +792,22 @@ let loadImage = function(url) {
     drawImage(image);
 */
   }
+  image.onerror  = function() {
+    // The video path is SUPER buggy.
+    console.log('Failed to create image... trying as a video?');
+
+    let video = Vid;
+    let cb = function(now, metadata) {
+      console.log('CB!!');
+      createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
+        onChange();
+        drawImage(image);
+      });
+    }
+    video.requestVideoFrameCallback(cb);
+    video.src = url;
+    video.play();
+  }
   image.src = url;
 }
 
@@ -800,8 +825,6 @@ let onChange = function() {
 
   if (RadioHLG.checked) {
     CLLIMaxNits.value = 1000;
-  }
-  if (RadioPQ.checked) {
   }
 
   draw();
@@ -885,6 +908,9 @@ function main() {
       Transfer:
       <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
       <label for="RadioPQ">PQ</label>
+
+      <input type="radio" id="RadioPQG" onchange='onChange();' name="input_transfer" hidden>
+      <label for="RadioPQG" hidden>PQ-G</label>
 
       <input type="radio" id="RadioHLG" onchange='onChange();' name="input_transfer">
       <label for="RadioHLG">HLG</label>
@@ -1087,6 +1113,8 @@ function main() {
 
 </div>
 </div>
+
+<video id='Vid' hidden></video>
 
 </body>
 </html>

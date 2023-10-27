@@ -439,6 +439,7 @@ var canvas;
 var gl;
 var program;
 
+var dragging_shift = false;
 var dragging = false;
 var dragging_last_x;
 var dragging_last_y;
@@ -450,6 +451,8 @@ var plane_indices_count;
 var plane_wire_indices = [0, 0];
 var plane_wire_indices_count = [0, 0];
 
+var view_fov = 5;
+var view_z = 4;
 var view_rotation_x = 15;
 var view_rotation_y = 35;
 
@@ -488,7 +491,9 @@ const gamut_common = `
 
   uniform sampler2D texture_xyzd50_lambda;
   uniform highp int input_position_type;
+  uniform float input_hdr_headroom;
   uniform highp int output_position_type;
+  uniform float tonemap_hdr_headroom;
 
   mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
                             0.291965,  0.692236,   0.0418818,
@@ -594,8 +599,28 @@ const gamut_common = `
     return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
   }
 
-  vec3 convert(vec3 c, int from, int to) {
-    if (from == to) {
+  float toneMapGain(float Y, float Lc, float Ld) {
+    if (Lc <= Ld) {
+      return 1.0;
+    }
+    float a = Ld / (Lc*Lc);
+    float b = 1.0 / Ld;
+    return (1.0 + a*Y) / (1.0 + b*Y);
+  }
+  float toneMapInvGain(float Ytm, float Lc, float Ld) {
+    if (Lc <= Ld) {
+      return 1.0;
+    }
+    if (Ytm == 0.0) {
+      return 1.0;
+    }
+    float a = Ld / (Lc*Lc);
+    float b = 1.0 / Ld;
+    return (sqrt(4.0*a*Ytm + pow(b*Ytm-1.0, 2.0)) + b*Ytm-1.0) / (2.0*a*Ytm);
+  }
+
+  vec3 convert(vec3 c, int from, float from_hdr_headroom, int to, float to_hdr_headroom) {
+    if (from == to && from_hdr_headroom == to_hdr_headroom) {
       return c;
     }
 
@@ -630,6 +655,19 @@ const gamut_common = `
 
     // c is now xyzd50
 
+    // Apply HDR headroom (and tonemapping) here.
+    {
+      vec3 kRec2020Y = vec3(0.262700, 0.678000, 0.059300);    
+      c *= from_hdr_headroom;
+      if (from_hdr_headroom > tonemap_hdr_headroom) {
+        c *= toneMapGain(dot(kRec2020Y, xyzd50_to_rec2020*c), from_hdr_headroom, tonemap_hdr_headroom);
+      }
+      if (to_hdr_headroom > tonemap_hdr_headroom) {
+        c *= toneMapInvGain(dot(kRec2020Y, xyzd50_to_rec2020*c), to_hdr_headroom, tonemap_hdr_headroom);
+      }
+      c /= to_hdr_headroom;
+    }
+
     // Direct-from-XYZD50 conversions.
     if (to == kOkLab) {
       c = xyzd50_to_oklab(c);
@@ -661,9 +699,13 @@ const gamut_common = `
     return c;
   }
 
+  vec3 convert(vec3 c, int from, int to) {
+    return convert (c, from, 1.0, to, 1.0);
+  }
+
   bool inGamut(vec3 c, int from, int to, float headroom) {
-    vec3 converted = convert(c, from, to);
-    return converted == clamp(converted, 0.0, headroom);
+    vec3 converted = convert(c, from, 1.0, to, headroom);
+    return converted == clamp(converted, 0.0, 1.0);
   }
 
   bool inGamut(vec3 c, int from, int to) {
@@ -762,14 +804,14 @@ const gamut_vs = `#version 300 es
     out vec3 v_normal;
     ` + gamut_common + `
     void main() {
-      v_xyzd50 = (matrixSubModel * position).xyz;
-      v_xyzd50 = convert(v_xyzd50, input_position_type, kXYZ);
+      vec3 in_color = (matrixSubModel * position).xyz;
+      v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
       v_position = convert(v_xyzd50, kXYZ, output_position_type);
 
       // Use finite difference for normals because work is hard.
       vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
       vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
-      vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, output_position_type);
+      vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, input_hdr_headroom, output_position_type, 1.0);
 
       v_normal = normalize(out_color_fd_normal - v_position);
 
@@ -1134,12 +1176,12 @@ let drawToFbo = function(width, height) {
   let matrixProjection = null;
   let matrixModelView = null;
   {
-    matrixProjection = matrixPerspective(5, width / height, 2, 6);
+    matrixProjection = matrixPerspective(view_fov, width / height, 2, 6);
     // matrixProjection = matrixOrtho2D(-width / height, width / height, -1.0, 1.0, -2.0, 2.0);
   }
   {
     let matrices = []
-    matrices.push(matrixTranslation(0, 0, -4));
+    matrices.push(matrixTranslation(0, -0.2 * Math.max(view_z - 4), -view_z));
     matrices.push(matrixRotation('x', view_rotation_x));
     matrices.push(matrixRotation('y', view_rotation_y));
 
@@ -1206,6 +1248,7 @@ let drawToFbo = function(width, height) {
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'texture_xyzd50_lambda'), 0);
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'output_position_type'), out_space);
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+  gl.uniform1f(gl.getUniformLocation(gamut_program, 'tonemap_hdr_headroom'), DisplayHdrHeadroom.value);
 
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
   if (RadioGamutMap_Clamp.checked) {
@@ -1251,6 +1294,7 @@ let drawToFbo = function(width, height) {
       if (draw_sdr_solid) {
         gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
                       slice_sdr ? slice_vector : no_slice_vector);
+        gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
         drawCube(gamut_program, null, 1.0);
       }
 
@@ -1259,7 +1303,10 @@ let drawToFbo = function(width, height) {
       if (draw_hdr_solid) {
         gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
                       slice_hdr ? slice_vector : no_slice_vector);
-        drawCube(gamut_program, null, HdrHeadroom.value);
+
+        gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), ContentHdrHeadroom.value);
+        drawCube(gamut_program, null, 1.0);
+        gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
       }
 
       gl.disable(gl.CULL_FACE);
@@ -1289,13 +1336,13 @@ let drawToFbo = function(width, height) {
       let gamut_map_headroom = 1.0;
       if (RadioPlane_HDR.checked) {
         // Explicity requested.
-        gamut_map_headroom = HdrHeadroom.value;
+        gamut_map_headroom = ContentHdrHeadroom.value;
       }
       if (RadioPlane_Auto.checked) {
         // In auto mode and we're both rendering and slicing the HDR gamut.
         if (GamutRender_Solid.checked) {
           if (RadioSlice_HDR.checked || RadioSlice_All.checked) {
-            gamut_map_headroom = HdrHeadroom.value;
+            gamut_map_headroom = ContentHdrHeadroom.value;
           }
         }
       }
@@ -1309,10 +1356,8 @@ let drawToFbo = function(width, height) {
     // Draw the slicing plane.
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), out_space);
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_space'), gamut_space);
-    gl.uniform1f(gl.getUniformLocation(gamut_program, 'gamut_map_headroom'),
-                 gamut_map_headroom);
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'),
-                 gamut_map_discard);
+    gl.uniform1f(gl.getUniformLocation(gamut_program, 'gamut_map_headroom'), gamut_map_headroom);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), gamut_map_discard);
     gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
 
     let matrices = [matrixIdentity()]
@@ -1370,7 +1415,7 @@ let drawToFbo = function(width, height) {
 
     // HDR
     let hdr_wire_draw = true;
-    if (HdrHeadroom.value == 1.0) {
+    if (ContentHdrHeadroom.value == 1.0) {
       // When headroom is 1, this is redundant with SDR.
       hdr_wire_draw = false;
     }
@@ -1383,7 +1428,10 @@ let drawToFbo = function(width, height) {
       let slice = !(GamutRender_Wireframe.checked || GamutRender_SdrSolid_HdrWireframe.checked);
       gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
                     slice ? flip_slice_vector : no_slice_vector);
-      drawCube(gamut_program, kGrid1x1, HdrHeadroom.value);
+
+      gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), ContentHdrHeadroom.value);
+      drawCube(gamut_program, kGrid1x1, 1.0);
+      gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
     }
   }
 
@@ -1479,6 +1527,7 @@ function doMouseDown(evt) {
   if (dragging)
      return;
   dragging = true;
+  dragging_shift = evt.shiftKey;
   document.addEventListener("mousemove", doMouseDrag, false);
   document.addEventListener("mouseup", doMouseUp, false);
   var box = canvas.getBoundingClientRect();
@@ -1496,8 +1545,12 @@ function doMouseDrag(evt) {
   var dx = x - dragging_last_x;
   var dy = y - dragging_last_y;
 
-  view_rotation_y += dx;
-  view_rotation_x += dy;
+  if (dragging_shift) {
+    view_z += 0.05 * dy;
+  } else {
+    view_rotation_y += dx;
+    view_rotation_x += dy;
+  }
 
   dragging_last_x = x;
   dragging_last_y = y;
@@ -1530,7 +1583,8 @@ let makeSpectrum = function() {
 }
 
 let onChange = function() {
-  HdrHeadroomValue.value = HdrHeadroom.value;
+  ContentHdrHeadroomValue.value = ContentHdrHeadroom.value;
+  DisplayHdrHeadroomValue.value = DisplayHdrHeadroom.value;
   draw();
 }
 
@@ -1658,12 +1712,19 @@ Geometric coordinate color space
 </div>
 </p>
 
+<p>
+<b>HDR</b>
+
 <div>
-HDR
-<label for="HdrHeadroom">Headroom</label>
-<input id="HdrHeadroom" type="range" min="1" max="4" step=0.01 value="1.0" oninput='onChange();' onchange='onChange();'/>
-<output id="HdrHeadroomValue">1</output>
+<label for="ContentHdrHeadroom">Content HDR Headroom</label>
+<input id="ContentHdrHeadroom" type="range" min="1" max="5" step=0.01 value="1.0" oninput='onChange();' onchange='onChange();'/>
+<output id="ContentHdrHeadroomValue">1</output>
+<br>
+<label for="DisplayHdrHeadroom">Tonemap HDR Headroom</label>
+<input id="DisplayHdrHeadroom" type="range" min="1" max="5" step=0.01 value="5.0" oninput='onChange();' onchange='onChange();'/>
+<output style='width:20px;' id="DisplayHdrHeadroomValue">5</output>
 </div>
+</p>
 
 <p>
 <b>Rendering</b>
@@ -1679,8 +1740,6 @@ Slicing plane:
 <input id="SliceFlip" type="checkbox" onchange='onChange();'/>
 <label for="SliceFlip">Flip</label>
 </div>
-
-
 </p>
 
 <div>
