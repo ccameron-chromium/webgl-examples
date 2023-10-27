@@ -757,9 +757,29 @@ let initializeGL = function() {
 
   gl = canvas.getContext('webgl2');
   gl.getExtension('EXT_color_buffer_half_float');
+  gl.getExtension('EXT_color_buffer_float');
+
+
+  let warningsText = '';
+  if (!(`drawingBufferColorSpace` in gl)) {
+    warningsText += '<br>REQUIRED WebGL API not found (drawingBufferColorSpace)!'
+  }
 
   if (`drawingBufferStorage` in gl) {
     gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  } else {
+    warningsText += '<br>Experimental WebGL API not found (drawingBufferStorage)!'
+  }
+  if (!(`configureHighDynamicRange` in canvas)) {
+    warningsText += '<br>Experimental HDR Canvas API not found (configureHighDyanmicRange)!'
+  }
+
+  if (warningsText != '') {
+    warningsText = 'Experimental features missing: Enable "Experimental Web Platform Features" in chrome://flags' + warningsText;
+
+    Warnings.hidden = false;
+    Warnings.style = 'color:#BC0000;';
+    Warnings.innerHTML = '<strong>' + warningsText + '</strong>';
   }
 
   program = compileShader(gl, vs, fs);
@@ -883,6 +903,8 @@ function main() {
 </script>
 </head>
 <body onload='main()'>
+
+<p id='Warnings' hidden=true></p>
 
 <table style="margin-left: auto; margin-right: auto;">
   <tr>
