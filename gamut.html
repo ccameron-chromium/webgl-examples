@@ -713,6 +713,123 @@ const gamut_common = `
     return converted == clamp(converted, 0.0, 1.0);
   }
 
+  float gamutMapOkLab2020Row(float alpha, float row_target, float L, vec3 A_0ab, vec3 D_row) {
+    for (int newton_iter = 0; newton_iter < 6; ++newton_iter) {
+      vec3 A_Lab = vec3(L, L, L) + alpha * A_0ab;
+ 
+      // Function value.
+      float f0 = dot(D_row,       A_Lab * A_Lab * A_Lab) - row_target;
+      float f1 = dot(D_row, 3.0 * A_0ab * A_Lab * A_Lab);
+      float f2 = dot(D_row, 6.0 * A_0ab * A_0ab * A_Lab);
+
+      float step = (f0 * f1) / (f1 * f1 - 0.5 * f0 * f2);
+      alpha -= step;
+    }
+    return alpha;
+  }
+
+  float gamutMapOkLab2020Guess(vec3 Lab, vec3 p0, vec3 p1, vec3 p2) {
+    vec3 n = cross(p2 - p0, p1 - p0);
+    vec3 Lzz = vec3(Lab[0], 0.0, 0.0);
+    vec3 zab = vec3(0.0, Lab[1], Lab[2]);
+    float alpha = (dot(p0, n) - dot(Lzz, n)) / dot(zab, n);
+    if (alpha < 0.0 || alpha > 1.0) {
+      return 1.0;
+    }
+    return alpha;
+  }
+
+  vec3 gamutMapOkLabOptimized(vec3 c, int from) {
+    vec3 Lab = convert(c, from, kOkLab);
+
+    float L = Lab.r;
+    float one_minus_L = 1.0 - Lab.r;
+    vec2 ab = Lab.gb - vec2(0.5, 0.5);
+
+    vec2 normal_R = vec2(0.409702, -0.912219);
+    vec2 normal_M = vec2(-0.397919, -0.917421);
+    vec2 normal_B = vec2(-0.906800, 0.421562);
+    vec2 normal_C = vec2(-0.171122, 0.985250);
+    vec2 normal_G = vec2(0.460276, 0.887776);
+    vec2 normal_Y = vec2(0.947925, 0.318495);
+
+    float c0_YR = 0.091132;
+    vec2  cW_YR = vec2(0.070370, 0.034139);
+    vec2  cK_YR = vec2(0.018170, 0.378550);
+    float c0_RM = 0.113902;
+    vec2  cW_RM = vec2(0.090836, 0.036251);
+    vec2  cK_RM = vec2(0.226781, 0.018764);
+    float c0_MB = 0.161739;
+    vec2  cW_MB = vec2(-0.008202, -0.264819);
+    vec2  cK_MB = vec2( 0.187156, -0.284304);
+    float c0_BC = 0.102047;
+    vec2  cW_BC = vec2(-0.014804, -0.162608);
+    vec2  cK_BC = vec2(-0.276786,  0.004193);
+    float c0_CG = 0.092029;
+    vec2  cW_CG = vec2(-0.038533, -0.001650);
+    vec2  cK_CG = vec2(-0.232572, -0.094331);
+    float c0_GY = 0.081709;
+    vec2  cW_GY = vec2(-0.034601, -0.002215);
+    vec2  cK_GY = vec2( 0.012185,  0.338031);
+
+    float c0;
+    vec2 cW;
+    vec2 cK;
+    if (dot(ab, normal_R) < 0.0) {
+      if (dot(ab, normal_G) < 0.0) {
+        if (dot(ab, normal_C) < 0.0) {
+          // Blue-Cyan
+          c0 = c0_BC; cW = cW_BC; cK = cK_BC;
+        } else {
+          // Cyan-Green
+          c0 = c0_CG; cW = cW_CG; cK = cK_CG;
+        }
+      } else {
+        if (dot(ab, normal_Y) < 0.0) {
+          // Green-Yellow
+          c0 = c0_GY; cW = cW_GY; cK = cK_GY;
+        } else {
+          // Yellow-Red
+          c0 = c0_YR; cW = cW_YR; cK = cK_YR;
+        }
+      }
+    } else {
+      if (dot(ab, normal_B) < 0.0) {
+        if (dot(ab, normal_M) < 0.0) {
+          // Red-Magenta
+          c0 = c0_RM; cW = cW_RM; cK = cK_RM;
+        } else {
+          // Magenta-Blue
+          c0 = c0_MB; cW = cW_MB; cK = cK_MB;
+        }
+      } else {
+        // Blue-Cyan
+        c0 = c0_BC; cW = cW_BC; cK = cK_BC;
+      }
+    }
+
+    float alpha = 1.0;
+    {
+      float w_denom = dot(cW, ab);
+      if (w_denom > 0.0) {
+        float w_num = c0*one_minus_L;
+        if (w_num < w_denom) {
+          alpha = min(alpha, w_num / w_denom);
+        }
+      }
+      float k_denom = dot(cK, ab);
+      if (k_denom > 0.0) {
+        float k_num = c0*L;
+        if (k_num < k_denom) {
+          alpha = min(alpha,  k_num / k_denom);
+        }
+      }
+    }
+
+    Lab.gb = alpha * ab + vec2(0.5, 0.5);
+    return convert(Lab, kOkLab, kSRGB);
+  }
+
   vec3 intersectWithUnitCube(vec3 a, vec3 b) {
     float alpha = 1.0;
     for (int i = 0; i < 3; ++i) {
@@ -883,6 +1000,9 @@ const gamut_fs = `#version 300 es
           vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
           c = clamp(c, 0.0, 1.0);
           srgb_color = convert(c, kRec2020Linear, kSRGB);
+        }
+        if (gamut_map_type == 5) {
+          srgb_color = gamutMapOkLabOptimized(v_xyzd50, kXYZ);
         }
         if (gamut_map_type == 2) {
           if (!inGamut(v_xyzd50, kXYZ, gamut_map_space)) {
@@ -1415,6 +1535,9 @@ let drawToFbo = function(width, height) {
   if (RadioGamutMap_CSS.checked) {
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 2);
   }
+  if (RadioGamutMap_CSS_OPT.checked) {
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 5);
+  }
   if (RadioGamutMap_L2.checked) {
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 3);
   }
@@ -1722,7 +1845,7 @@ let initializeGL = function() {
   let saveCanvas = function() {
     draw();
 
-    let mime_type = "image/jpeg";
+    let mime_type = "image/png";
     let download_link = document.createElement('a');
     let data_url = canvas.toDataURL(mime_type);
  
@@ -1817,24 +1940,44 @@ function main() {
 
 <p id='Warnings' hidden=true></p>
 
+<table>
+<tr>
+
+<td style="padding-right: 40px;">
+
+<div id="wrapper">
+  <p id="AxisOrigin" style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">0</p>
+  <p id="Axis0"      style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">R</p>
+  <p id="Axis1"      style="user-select:none; position: absolute; width:16px; height:16; z-index:2; text-align:center;">G</p>
+  <p id="Axis2"      style="user-select:none; position: absolute; width:16px; height:16; z-index:3; text-align:center;">B</p>
+
+<canvas id='Canvas' width='640' height='480'>
+</canvas>
+</div>
+<p><button type="button" id="ButtonSave">Save Canvas</button></p>
+
+</td>
+<td>
+
 <p>
 <b>Gamut</b>
 
 <div>
-Gamut volume color space
+<p>
+Gamut volume color space<br>
 
 <input type="radio" name="volume" onchange='onChange();' id="RadioVolume_sRGB">
 <label for="RadioVolume_sRGB">sRGB</label>
 
-<input type="radio" name="volume" onchange='onChange();' id="RadioVolume_P3" checked>
+<input type="radio" name="volume" onchange='onChange();' id="RadioVolume_P3">
 <label for="RadioVolume_P3">P3</label>
 
-<input type="radio" name="volume" onchange='onChange();' id="RadioVolume_Rec2020">
+<input type="radio" name="volume" onchange='onChange();' id="RadioVolume_Rec2020" checked>
 <label for="RadioVolume_Rec2020">Rec2020</label>
 </div>
 
 <div>
-Geometric coordinate color space
+Geometric coordinate color space<br>
 
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_sRGB">
 <label for="RadioGeo_sRGB">sRGB</label>
@@ -1876,7 +2019,7 @@ Geometric coordinate color space
 <div>
 Slicing plane:
 <label for="SliceAxis">Axis</label>
-<input id="SliceAxis" type="number" min="0" max="3" value="1" onchange='onChange();'/>
+<input id="SliceAxis" type="number" min="0" max="3" value="0" onchange='onChange();'/>
 
 <label for="SliceValue">Value</label>
 <input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.5" oninput='onChange();' onchange='onChange();'/>
@@ -1888,10 +2031,10 @@ Slicing plane:
 
 <div>
 Slice:
-<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_None">
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_None" checked>
 <label for="RadioSlice_None">Nothing</label>
 
-<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_All" checked>
+<input type="radio" name="discard" onchange='onChange();' id="RadioSlice_All">
 <label for="RadioSlice_All">Everything</label>
 
 <input type="radio" name="discard" onchange='onChange();' id="RadioSlice_HDR">
@@ -1900,7 +2043,7 @@ Slice:
 
 <div>
 Slicing plane: 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto" checked>
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto">
 <label for="RadioPlane_Auto">Auto</label>
 
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_SDR">
@@ -1909,7 +2052,7 @@ Slicing plane:
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_HDR">
 <label for="RadioPlane_HDR">HDR</label>
 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane">
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane" checked>
 <label for="RadioPlane_Plane">Full</label>
 </div>
 </p>
@@ -1929,11 +2072,14 @@ Gamut:
 
 <div>
 Gamut mapping:
-<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_None" checked>
+<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_None">
 <label for="RadioGamutMap_None">None</label>
 
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_CSS">
 <label for="RadioGamutMap_CSS">CSS</label>
+
+<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_CSS_OPT" checked>
+<label for="RadioGamutMap_CSS_OPT">CSS (opt)</label>
 
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_Clamp">
 <label for="RadioGamutMap_Clamp">Clamp</label>
@@ -1961,19 +2107,9 @@ Spectral colors:
 <label hidden for="SliceSpectrum">Slice</label>
 </div>
 
-<p>
-<div id="wrapper">
-  <p id="AxisOrigin" style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">0</p>
-  <p id="Axis0"      style="user-select:none; position: absolute; width:16px; height:16; z-index:1; text-align:center;">R</p>
-  <p id="Axis1"      style="user-select:none; position: absolute; width:16px; height:16; z-index:2; text-align:center;">G</p>
-  <p id="Axis2"      style="user-select:none; position: absolute; width:16px; height:16; z-index:3; text-align:center;">B</p>
-
-<p><button type="button" id="ButtonSave">Save Canvas</button></p>
-
-<canvas id='Canvas' width='640' height='480'>
-</canvas>
-</div>
-</p>
+</td>
+</tr>
+</table>
 
 </body>
 </html>
