@@ -48,6 +48,70 @@ let pqSignalToNits = function(v) {
   return 10000.0 * Math.pow(Math.max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
 }
 
+const kGamutMapNone = 0;
+const kGamutMapMark = 1;
+const kGamutMapClamp = 2;
+const kGamutMapScaleRGB = 3;
+const kGamutMapScaleUV = 4;
+const kGamutMapL2RGB = 5;
+
+const kToneMapNone = 0;
+const kToneMapNativePQ = 1;
+const kToneMapNativeHLG = 2;
+const kToneMapClamp = 3;
+const kToneMapReinhard = 4;
+const kToneMapBT2408 = 5;
+const kToneMapBT2446A = 6;
+const kToneMapBT2446C = 7;
+const kToneMapBT2100HLG = 8;
+const kToneMapHLGAs22 = 9;
+
+const kFinalGamutNone = 0;
+const kFinalGamutMark = 1;
+const kFinalGamutClamp = 2;
+
+const kTransferSRGB = 0;
+const kTransferHLG = 1;
+const kTransferPQ = 2;
+const kTransferPQ_G = 3;
+
+const kGamutSRGB = 0;
+const kGamutP3 = 1;
+const kGamutRec2020 = 2;
+
+const fs_constants = `
+  int kGamutMapNone = 0;
+  int kGamutMapMark = 1;
+  int kGamutMapClamp = 2;
+  int kGamutMapScaleRGB = 3;
+  int kGamutMapScaleUV = 4;
+  int kGamutMapL2RGB = 5;
+
+  int kToneMapNone = 0;
+  int kToneMapNativePQ = 1;
+  int kToneMapNativeHLG = 2;
+  int kToneMapClamp = 3;
+  int kToneMapReinhard = 4;
+  int kToneMapBT2408 = 5;
+  int kToneMapBT2446A = 6;
+  int kToneMapBT2446C = 7;
+  int kToneMapBT2100HLG = 8;
+  int kToneMapHLGAs22 = 9;
+
+  int kFinalGamutNone = 0;
+  int kFinalGamutMark = 1;
+  int kFinalGamutClamp = 2;
+
+  int kTransferSRGB = 0;
+  int kTransferHLG = 1;
+  int kTransferPQ = 2;
+  int kTransferPQ_G = 3;
+
+  int kGamutSRGB = 0;
+  int kGamutP3 = 1;
+  int kGamutRec2020 = 2;
+  `
+
 const vs = `attribute vec2 position;
             varying vec2 texcoord;
             void main() {
@@ -60,14 +124,17 @@ const fs = `
   uniform float clli_max_nits;
   uniform float ndwl_white_nits;
   uniform float hlg_ootf_gamma;
-  uniform int mode;
+  uniform int tonemap_mode;
   uniform int tonemap_scalar_mode;
   uniform int gamut_map_mode;
-  uniform int mark_out_of_gamut;
-  uniform int transfer;
-  uniform int primaries;
+  uniform int final_gamut_mode;
+  uniform int final_gamut;
+  uniform int signal_transfer;
+  uniform int signal_primaries;
   uniform int use_bgr;
   varying vec2 texcoord;
+
+  ` + fs_constants + `
 
   // Primary conversion matrices.
   mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
@@ -168,6 +235,9 @@ const fs = `
       return 0.5 * sqrt(E);
     }
     return a * log(E - b) + c;
+  }
+  vec3 hlgOetf(vec3 c) {
+    return vec3(hlgOetf(c.r), hlgOetf(c.g), hlgOetf(c.b));
   }
 
   float toneMapGainChrome(float L, float Lc, float Ld) {
@@ -279,19 +349,6 @@ const fs = `
     return alpha * a + (1.0 - alpha) * b;
   }
 
-  vec3 gamutMapClamp(vec3 rgb) {
-    return clamp(rgb, 0.0, 1.0);
-  }
-
-  vec3 gamutMapScale(vec3 rgb) {
-    return intersectWithUnitCube(rgb, vec3(0.0, 0.0, 0.0));
-  }
-
-  vec3 gamutMapScaleUV(vec3 rgb) {
-    float Y = rec2020_rgb_to_yuv(rgb).r;
-    return intersectWithUnitCube(rgb, vec3(Y, Y, Y));
-  }
-
   vec3 mark_out_of_range(vec3 c) {
     float kEpsilon;
     kEpsilon = 0.1;
@@ -304,13 +361,13 @@ const fs = `
     if (c.r < -kEpsilon || c.r > 1.0 + kEpsilon ||
         c.g < -kEpsilon || c.g > 1.0 + kEpsilon ||
         c.b < -kEpsilon || c.b > 1.0 + kEpsilon) {
-      return vec3(1.0, 1.0, 0.0);
+      return vec3(1.0, 0.0, 0.0);
     }
     kEpsilon = 0.00001;
     if (c.r < -kEpsilon || c.r > 1.0 + kEpsilon ||
         c.g < -kEpsilon || c.g > 1.0 + kEpsilon ||
         c.b < -kEpsilon || c.b > 1.0 + kEpsilon) {
-      return vec3(0.0, 1.0, 0.0);
+      return vec3(1.0, 0.0, 0.0);
     }
     return c;
   }
@@ -348,21 +405,72 @@ const fs = `
     return (1.0 - alpha) * c1 + alpha * c2;
   }
 
-  void main() {
-    vec3 c = texture2D(texture, texcoord).rgb;
-    if (use_bgr == 1) {
-      c = c.bgr;
+  // Perform gamut mapping on the specified rec2020 color.
+  vec3 gamutMap(vec3 c) {
+    if (gamut_map_mode == kGamutMapClamp) {
+      c = clamp(c, 0.0, 1.0);
     }
-    gl_FragColor.a = 1.0;
+    if (gamut_map_mode == kGamutMapScaleUV) {
+      float Y = rec2020_rgb_to_yuv(c).r;
+      c = intersectWithUnitCube(c, vec3(Y, Y, Y));
+      c = clamp(c, 0.0, 1.0);
+    }
+    if (gamut_map_mode == kGamutMapScaleRGB) {
+      c = intersectWithUnitCube(c, vec3(0.0, 0.0, 0.0));
+      c = clamp(c, 0.0, 1.0);
+    }
+    if (gamut_map_mode == kGamutMapL2RGB) {
+      // This is finding the nearest L2 point in RGB space that is in the
+      // plane defined by black, white, and the color c itself.
+      float M = max(max(c.r, c.g), c.b);
+      if (M > 1.0) {
+        vec3 u = vec3(1.0, 1.0, 1.0);
+        vec3 v = u - (1.0/M) * c;
+        vec3 w = (1.0 - 1.0/M) * c;
+        float alpha = dot(v, w) / dot(v, v);
+        c = ((1.0 - alpha)/M) * c + (alpha)*u;
+        // c = nearestPointOnSegment(c, c / maxRGB, vec3(1.0, 1.0, 1.0));
+      }
+      c = clamp(c, 0.0, 1.0);
+    }
+    return c;
+  }
+
+  vec3 finalGamut(vec3 c) {
+    // Convert to the space for gamut mapping.
+    if (final_gamut == kGamutSRGB) {
+      c = xyzd50_to_srgb * rec2020_to_xyzd50 * c;
+    } else if (final_gamut == kGamutP3) {
+      c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
+    }
+
+    if (final_gamut_mode == kFinalGamutNone) {
+    } else if (final_gamut_mode == kFinalGamutMark) {
+      c = mark_out_of_range(c);
+    } else if (final_gamut_mode == kFinalGamutClamp) {
+      c = clamp(c, 0.0, 1.0);
+    }
+
+    // Convert back to Rec2020.
+    if (final_gamut == kGamutSRGB) {
+      c = xyzd50_to_rec2020 * srgb_to_xyzd50 * c;
+    } else if (final_gamut == kGamutP3) {
+      c = xyzd50_to_rec2020 * p3_to_xyzd50 * c;
+    }
+    return c;
+  }
+
+  vec3 readTextureAsRec2100Nits() {
+    vec3 c = texture2D(texture, texcoord).rgb;
 
     // Convert to linear.
-    if (transfer == 0) {
+    if (signal_transfer == kTransferPQ) {
       c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
     }
-    if (transfer == 1) {
+    if (signal_transfer == kTransferHLG) {
       c = vec3(hlgOetfInv(c.r), hlgOetfInv(c.g), hlgOetfInv(c.b));
     }
-    if (transfer == 2) {
+    if (signal_transfer == kTransferPQ_G) {
       c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
 
       float Y = rec2020_rgb_to_yuv(c).r / ndwl_white_nits;
@@ -370,34 +478,65 @@ const fs = `
     }
 
     // Convert from image primaries to rec2020 primaries.
-    if (primaries == 0) {
+    if (signal_primaries == 0) {
       c = xyzd50_to_rec2020 * srgb_to_xyzd50 * c;
     }
-    if (primaries == 1) {
+    if (signal_primaries == 1) {
       c = xyzd50_to_rec2020 * p3_to_xyzd50 * c;
     }
 
-    // Apply the HLG OOTF (and scale up).
-    if (transfer == 1) {
+    // Apply the HLG OOTF (and scale up) in rec2020.
+    if (signal_transfer == kTransferHLG) {
       c = hlgRefOotf(c);
     }
 
-    // For Native PQ mode, convert nits back to singal.
-    if (mode == -1) {
-      c = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
-      gl_FragColor.rgb = c;
-      return;
+    return c;
+  }
+
+  void main() {
+    // Treat everything as opaque. Just write RGB from here on.
+    gl_FragColor.a = 1.0;
+
+    vec3 c = readTextureAsRec2100Nits();
+
+    // Convert to Rec2100 PQ and HLG signal (this is un-doing one of the above functions).
+    vec3 c_rec2100pq = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
+    vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
+
+    // For curve-based tonemap functions, compute the per-channel inputs.
+    vec3 tonemap_input = vec3(0.0, 0.0, 0.0);
+    if (tonemap_scalar_mode == 0) {
+      // maxRGB
+      tonemap_input = vec3(max(max(c.r, c.g), c.b));
+    }
+    else if (tonemap_scalar_mode == 1) {
+      // YRGB
+      tonemap_input = vec3(rec2020_rgb_to_yuv(c).r);
+    }
+    else if (tonemap_scalar_mode == 2) {
+      // R'G'B'
+      tonemap_input = c;
     }
 
-    // For Native HLG mode, convert nits back to signal.
-    if (mode == -2) {
-      c = hlgRefOotfInv(c);
-      c = vec3(hlgOetf(c.r), hlgOetf(c.g), hlgOetf(c.b));
-      gl_FragColor.rgb = c;
+    if (tonemap_mode == kToneMapNone) {
+      c /= ndwl_white_nits;
+    }
+    else if (tonemap_mode == kToneMapNativePQ) {
+      // For Native PQ, just write the value and return.
+      gl_FragColor.rgb = c_rec2100pq;
       return;
     }
-
-    if (mode == 6) {
+    else if (tonemap_mode == kToneMapNativeHLG) {
+      // For Native HLG, just write the value and return.
+      gl_FragColor.rgb = c_rec2100hlg;
+      return;
+    }
+    else if (tonemap_mode == kToneMapClamp) {
+      c /= ndwl_white_nits;
+      c = max(c, vec3(0.0, 0.0, 0.0));
+      c = min(c, vec3(1.0, 1.0, 1.0));
+    }
+    else if (tonemap_mode == kToneMapBT2100HLG) {
       // If the mode is ITU-R BT.2100, just apply the custom OOTF gamma.
 
       // Convert back to linear [0, 1] before the OOTF.
@@ -406,93 +545,45 @@ const fs = `
       // Apply the specified gamma.
       float Y = rec2020_rgb_to_yuv(c).r;
       c *= pow(Y, hlg_ootf_gamma - 1.0);
-
-    } else {
-      // For all other modes, we apply tonemapping to nits.
-
-      // Compute the tonemapping gain.
-      vec3 gain = vec3(1.0, 1.0, 1.0);
-      {
-        // Compute the tonemapping function input.
-        vec3 tonemap_input = vec3(0.0, 0.0, 0.0);
-        if (tonemap_scalar_mode == 0) {
-          // maxRGB
-          tonemap_input = vec3(max(max(c.r, c.g), c.b));
-        }
-        if (tonemap_scalar_mode == 1) {
-          // YRGB
-          tonemap_input = vec3(rec2020_rgb_to_yuv(c).r);
-        }
-        if (tonemap_scalar_mode == 2) {
-          // R'G'B'
-          tonemap_input = c;
-        }
-
-        // Compute the tonemapping function's gain for each channel.
-        if (mode == 2) {
-          // Reinhard.
-          gain = vec3(
-              toneMapGainChrome(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-              toneMapGainChrome(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-              toneMapGainChrome(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-        }
-        if (mode == 3) {
-          // ITU-R BT.2408.
-          gain = vec3(
-              toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-              toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-              toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
-        }
-        if (mode == 4) {
-          // ITU-R BT.2446 Method A.
-          gain = vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-                      toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-                      toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-        }
-        if (mode == 5) {
-          // ITU-R BT.2446 Method C.
-          gain = vec3(toneMapGainBT2446c(tonemap_input.r),
-                      toneMapGainBT2446c(tonemap_input.g),
-                      toneMapGainBT2446c(tonemap_input.b));
-        }
-      }
-
-      // Apply the tonemapping gain.
-      c *= gain;
-
-      // Scale NDWL nits down to 1.0
+    }
+    else if (tonemap_mode == kToneMapHLGAs22) {
+      c = pow(c_rec2100hlg, vec3(2.2, 2.2, 2.2));
+    }
+    else if (tonemap_mode == kToneMapReinhard) {
+      c *= vec3(toneMapGainChrome(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+                toneMapGainChrome(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+                toneMapGainChrome(tonemap_input.b, clli_max_nits, ndwl_white_nits));
       c /= ndwl_white_nits;
     }
-
-    // Gamut map.
-    if (mode != 1) {
-      if (gamut_map_mode == 1) {
-        c = gamutMapClamp(c);
-      }
-      if (gamut_map_mode == 2) {
-        c = gamutMapScaleUV(c);
-      }
-      if (gamut_map_mode == 3) {
-        c = gamutMapScale(c);
-      }
-      if (gamut_map_mode == 4) {
-        // This is finding the nearest L2 point in RGB space that is in the
-        // plane defined by black, white, and the color c itself.
-        float M = max(max(c.r, c.g), c.b);
-        if (M > 1.0) {
-          vec3 u = vec3(1.0, 1.0, 1.0);
-          vec3 v = u - (1.0/M) * c;
-          vec3 w = (1.0 - 1.0/M) * c;
-          float alpha = dot(v, w) / dot(v, v);
-          c = ((1.0 - alpha)/M) * c + (alpha)*u;
-          // c = nearestPointOnSegment(c, c / maxRGB, vec3(1.0, 1.0, 1.0));
-        }
-      }
+    else if (tonemap_mode == kToneMapBT2408) {
+      // ITU-R BT.2408.
+      c *= vec3(toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+                toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+                toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
+      c /= ndwl_white_nits;
+    }
+    else if (tonemap_mode == kToneMapBT2446A) {
+      // ITU-R BT.2446 Method A.
+      c *= vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+                toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+                toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
+      c /= ndwl_white_nits;
+    }
+    else if (tonemap_mode == kToneMapBT2446C) {
+      // ITU-R BT.2446 Method C.
+      c *= vec3(toneMapGainBT2446c(tonemap_input.r),
+                toneMapGainBT2446c(tonemap_input.g),
+                toneMapGainBT2446c(tonemap_input.b));
+      c /= ndwl_white_nits;
+    } else {
+      c *= 0.0;
     }
 
-    if (mark_out_of_gamut == 1) {
-      c = mark_out_of_range(c);
-    }
+    // Perform gamut mapping in Rec2020.
+    c = gamutMap(c);
+
+    // Clamp or mark out-of-gamut for final gamut.
+    c = finalGamut(c);
 
     // Convert from rec2020 to P3.
     c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
@@ -600,135 +691,200 @@ let draw = function() {
   gl.uniform1f(gl.getUniformLocation(program, 'clli_max_nits'), CLLIMaxNits.value);
   gl.uniform1f(gl.getUniformLocation(program, 'hlg_ootf_gamma'), hlg_ootf_gamma);
 
-  let mode = '';
-  let use_tonemap = false;
-  if (RadioClamp.checked) {
-    mode = 'clamp';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 0);
-  }
-  if (RadioFullHDR.checked) {
-    mode = 'hdr';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 1);
-  }
-  if (RadioReinhard.checked) {
-    mode = 'reinhard';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 2);
-    use_tonemap = true;
-  }
-  if (RadioBT2408.checked) {
-    mode = 'bt2408';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 3);
-    use_tonemap = true;
-  }
-  if (RadioBT2446A.checked) {
-    mode = 'bt2446a';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 4);
-    use_tonemap = true;
-  }
-  if (RadioBT2446C.checked) {
-    mode = 'bt2446c';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 5);
-    use_tonemap = true;
-  }
-  if (RadioBT2100.checked) {
-    mode = 'bt2100_gamma' + hlg_ootf_gamma.toFixed(2);
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), 6);
-  }
-  if (RadioNativePQ.checked) {
-    mode = 'native-pq';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), -1);
-
-    gl.drawingBufferColorSpace = 'rec2100-pq';
-    canvas.configureHighDynamicRange({
-        smpteSt2086Metadata:{
-            redPrimaryX:0.708,
-            redPrimaryY:0.292,
-            greenPrimaryX:0.170,
-            greenPrimaryY:0.797,
-            bluePrimaryX:0.131,
-            bluePrimaryY:0.046,
-            whitePointX:0.3127,
-            whitePointY:0.3290,
-            minimumLuminance:1,
-            maximumLuminance:CLLIMaxNits.value,
-        }});
-  } else if (RadioNativeHLG.checked) {
-    mode = 'native-hlg';
-    gl.uniform1i(gl.getUniformLocation(program, 'mode'), -2);
-
-    gl.drawingBufferColorSpace = 'rec2100-hlg';
-    canvas.configureHighDynamicRange({});
-  } else {
-    gl.drawingBufferColorSpace = 'display-p3';
-    if (`configureHighDynamicRange` in canvas) {
-      canvas.configureHighDynamicRange({ mode:'extended' });
-    }
-  }
-
-  if (use_tonemap) {
-    if (RadioMaxRGB.checked) {
+  tonemap_curve_input_name = '';
+  switch (ToneMapCurveInput.value) {
+    case 'maxRGB':
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 0);
-      mode += '-max_rgb'
-    }
-    if (RadioYRGB.checked) {
+      tonemap_curve_input_name += 'maxRGB';
+      break;
+    case 'YRGB':
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 1);
-      mode += '-y_rgb'
-    }
-    if (RadioRpGpBp.checked) {
+      tonemap_curve_input_name += 'yRGB';
+      break;
+    case 'RpGpBp':
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 2);
-      mode += '-rpgpbp'
-    }
+      tonemap_curve_input_name += 'rpgpbp';
+      break;
+    default:
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), -1);
+      break;
+  }
+
+  let desc = '';
+  let use_tonemap_curve = false;
+  switch(ToneMap.value) {
+    case 'None':
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapNone);
+      break;
+    case 'NativePQ':
+      desc == 'native-pq';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapNativePQ);
+      break;
+    case 'NativeHLG':
+      desc == 'native-hlg';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapNativeHLG);
+      break;
+    case 'Clamp':
+      desc = 'clamp';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapClamp);
+      break;
+    case 'Reinhard':
+      use_tonemap_curve = true;
+      desc = 'reinhard';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapReinhard);
+      break;
+    case 'BT2408':
+      desc = 'bt2408';
+      use_tonemap_curve = true;
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2408);
+      break;
+    case 'BT2446A':
+      use_tonemap_curve = true;
+      desc = 'bt2446a';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2446A);
+      break;
+    case 'BT2446C':
+      use_tonemap_curve = true;
+      desc = 'bt2446c';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2446C);
+      break;
+    case 'BT2100HLG':
+      desc = 'bt2100_gamma' + hlg_ootf_gamma.toFixed(2);
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2100HLG);
+      break;
+    case 'HLGAs22':
+      desc = 'hgl_as_g22';
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapHLGAs22);
+      break;
+    default:
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), -1);
+      break;
+  }
+
+  if (use_tonemap_curve) {
+    ToneMapCurveInputLabel.innerText = 'Tone map curve input:'
+    desc += '-' + tonemap_curve_input_name;
   } else {
-    gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), -1);
+    ToneMapCurveInputLabel.innerText = 'Tone map curve input (NOT USED):'
   }
 
-  
-  let gamut_map_mode = '';
-  if (RadioGamutNone.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 0);
-  }
-  if (RadioGamutClamp.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 1);
-    gamut_map_mode = '-clamp_rgb';
-  }
-  if (RadioGamutScaleUV.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 2);
-    gamut_map_mode = '-scale_uv';
-  }
-  if (RadioGamutScaleRGB.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 3);
-    gamut_map_mode = '-scale_rgb';
-  }
-  if (RadioGamutRGB_L2.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 4);
-    gamut_map_mode = '-rgbL2';
-  }
-  if (RadioGamutYUV_L2.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), 5);
-    gamut_map_mode = '-yuvL2';
+  ParamsToneMapCurve.hidden = !use_tonemap_curve;
+  ParamsBT2100HLG.hidden = (ToneMap.value != 'BT2100HLG');
+
+  switch (ToneMap.value) {
+    case 'NativePQ':
+      gl.drawingBufferColorSpace = 'rec2100-pq';
+      canvas.configureHighDynamicRange({
+          smpteSt2086Metadata:{
+              redPrimaryX:0.708,
+              redPrimaryY:0.292,
+              greenPrimaryX:0.170,
+              greenPrimaryY:0.797,
+              bluePrimaryX:0.131,
+              bluePrimaryY:0.046,
+              whitePointX:0.3127,
+              whitePointY:0.3290,
+              minimumLuminance:1,
+              maximumLuminance:CLLIMaxNits.value,
+          }});
+      break;
+
+    case 'NativeHLG':
+      gl.drawingBufferColorSpace = 'rec2100-hlg';
+      canvas.configureHighDynamicRange({});
+      break;
+
+    default:
+      gl.drawingBufferColorSpace = 'display-p3';
+      if (`configureHighDynamicRange` in canvas) {
+        if (FinalGamut.value == 'None') {
+          canvas.configureHighDynamicRange({ mode:'extended' });
+        } else {
+          canvas.configureHighDynamicRange({});
+        }
+      }
+      break;
   }
 
-  gl.uniform1i(gl.getUniformLocation(program, 'mark_out_of_gamut'), RadioGamutMark.checked);
+  let gamut_map_desc = '';
+  switch (GamutMap.value) {
+    case 'None':
+      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapNone);
+      break;
+    case 'Clamp':
+      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapClamp);
+      gamut_map_desc = '-clamp_rgb';
+      break;
+    case 'ScaleUV':
+      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapScaleUV);
+      gamut_map_desc = '-scale_uv';
+      break;
+    case 'ScaleRGB':
+      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapScaleRGB);
+      gamut_map_desc = '-scale_rgb';
+      break;
+    case 'RGB-L2':
+      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapL2RGB);
+      gamut_map_desc = '-rgbL2';
+      break;
+    default:
+      console.log('Bug in gamut mapping selector');
+  }
+  desc += gamut_map_desc;
 
+  switch (FinalGamut.value) {
+    case 'None':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutNone);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
+      break;
+    case 'ClampSRGB':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutSRGB);
+      break;
+    case 'ClampP3':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutP3);
+      break;
+    case 'ClampRec2020':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
+      break;
+    case 'MarkSRGB':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutSRGB);
+      break;
+    case 'MarkP3':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutP3);
+      break;
+    case 'MarkRec2020':
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
+      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
+      break;
+  }
 
-  if (RadioPQ.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 0);
-  }
-  if (RadioHLG.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 1);
-  }
-  if (RadioPQG.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'transfer'), 2);
+  switch (SignalTransfer.value) {
+    case 'pq':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferPQ);
+      break;
+    case 'hlg':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferHLG);
+      break;
+    case 'pq-g':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferPQ_G);
+      break;
   }
 
-  if (RadioSRGB.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 0);
-  }
-  if (RadioP3.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 1);
-  }
-  if (RadioBT2020.checked) {
-    gl.uniform1i(gl.getUniformLocation(program, 'primaries'), 2);
+  switch (SignalPrimaries.value) {
+    case 'srgb':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_primaries'), kGamutSRGB);
+      break;
+    case 'p3':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_primaries'), kGamutP3);
+      break;
+    case 'rec2020':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_primaries'), kGamutRec2020);
+      break;
   }
 
   // gl.uniform1i(gl.getUniformLocation(program, 'use_bgr'), CheckboxBGR.checked);
@@ -742,7 +898,7 @@ let draw = function() {
     let download_link = document.createElement('a');
     let data_url = canvas.toDataURL(mime_type);
 
-    download_link.download = filename + '-' + mode + gamut_map_mode + '.png';
+    download_link.download = filename + '-' + desc + '.png';
     download_link.href = data_url;
     download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
 
@@ -843,7 +999,7 @@ let onChange = function() {
   }
   recomputeHlgOotfGamma();
 
-  if (RadioHLG.checked) {
+  if (SignalTransfer.value == 'hlg') {
     CLLIMaxNits.value = 1000;
   }
 
@@ -917,39 +1073,34 @@ function main() {
 
     <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-<!--
     <td>
-      <input type="checkbox" id="CheckboxBGR" onchange='onChange();' name="input_primaries" checked="true">
-      <label for="CheckboxBGR">Swap RGB to BGR</label>
-    </td>
+      <label for="SignalTransfer">Image transfer function:</label>
+      <select name="SignalTransfer" id="SignalTransfer" onchange='onChange();'>
+        <option value="pq">PQ</option>
+        <option value="hlg">HLG</option>
+      </select>
 
-    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
--->
+      <br>
 
-    <td>
-      Transfer:
-      <input type="radio" id="RadioPQ" onchange='onChange();' name="input_transfer" checked="true">
-      <label for="RadioPQ">PQ</label>
+      <label for="SignalPrimaries">Image primaries:</label>
+      <select name="SignalPrimaries" id="SignalPrimaries" onchange='onChange();'>
+        <option value="srgb">sRGB</option>
+        <option value="p3">P3</option>
+        <option value="rec2020" selected>ITU-R BT.2020</option>
+      </select>
 
-      <input type="radio" id="RadioPQG" onchange='onChange();' name="input_transfer" hidden>
-      <label for="RadioPQG" hidden>PQ-G</label>
+      <br><br>
 
-      <input type="radio" id="RadioHLG" onchange='onChange();' name="input_transfer">
-      <label for="RadioHLG">HLG</label>
-    </td>
+      <label for="CLLIMaxNits">Image CLLI Max Luminance (nits)</label>
+      <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
 
-    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+      <br>
 
-    <td>
-      Primaries:
-      <input type="radio" id="RadioSRGB" onchange='onChange();' name="input_primaries">
-      <label for="RadioSRGB">sRGB</label>
+      <label for="NDWLWhiteNits">Image NDWL White Luminance (nits)</label>
+      <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
 
-      <input type="radio" id="RadioP3" onchange='onChange();' name="input_primaries" checked="true">
-      <label for="RadioP3">DCI P3</label>
+    <br>
 
-      <input type="radio" id="RadioBT2020" onchange='onChange();' name="input_primaries" checked="true">
-      <label for="RadioBT2020">ITU-R BT.2020</label>
     </td>
 
     <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
@@ -961,152 +1112,67 @@ function main() {
   </tr>
 </table>
 
-<!-- **** CLLI, NDWL parameters **** -->
-<hr>
-
-<table style="margin-left: auto; margin-right: auto;">
-  <tr>
-    <td style="text-align:center;">
-      <label for="CLLIMaxNits">CLLI Max Luminance (nits)</label>
-      <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
-    </td>
-
-    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-    <td style="text-align:center;">
-      <label for="NDWLWhiteNits">NDWL White Luminance (nits)</label>
-      <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
-    </td>
-  </tr>
-</table>
-
-
 <!-- **** Tonemap parameters **** -->
 <hr>
 
 <table style="margin-left: auto; margin-right: auto;">
   <tr>
+  <td style="width:50%;">
+    <label for="ToneMap">Tone mapping:</label><br>
+    <select name="ToneMap" id="ToneMap" onchange='onChange();'>
+      <option value="None">Full HDR</option>
+      <option value="NativePQ">Native PQ tone mapping (to display)</option>
+      <option value="NativeHLG">Native HLG tone mapping (to display)</option>
+      <option value="Clamp">Clamp to NDWL</option>
+      <option value="Reinhard">Reinhard (map CLLI max to NDWL)</option>
+      <option value="BT2408">ITU-R BT.2408 Annex 5</option>
+      <option value="BT2446A">ITU-R BT.2446 Method A</option>
+      <option value="BT2446C">ITU-R BT.2446 Method C</option>
+      <option value="BT2100HLG">HLG rendered using ITU-R BT.2100 (with specified Lw)</option>
+      <option value="HLGAs22">HLG reinterpreted as Gamma 2.2</option>
+    </select>
 
-  <td style="text-align:center;">
-    Tonemap input:<br>
-    <table>
-    <tr><td style="width:200px;">
-      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioYRGB" checked="true">
-      <label for="RadioYRGB">YRGB</label>
-    </td></tr>
-    <tr><td>
-      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioMaxRGB">
-      <label for="RadioMaxRGB">maxRGB</label>
-    </td></tr>
-    <tr><td>
-      <input type="radio" name="tonemap_scalar" onchange='onChange();' id="RadioRpGpBp">
-      <label for="RadioRpGpBp">R'G'B'</label>
-    </td></tr>
-    </table>
+  <br><br>
+
+    <label for="GamutMap">Gamut mapping in Rec2020:</label><br>
+    <select name="GamutMap" id="GamutMap" onchange='onChange();'>
+      <option selected value="None">None (allow out-of-gamut values)</option>
+      <option value="Clamp">Clamp RGB to target gamut</option>
+      <option value="ScaleRGB">Scale RGB to gamut</option>
+      <option value="ScaleUV">Scale chroma (UV) to gamut</option>
+      <option value="RGB-L2">Min RGB L2</option>
+    </select>
+
+
+  <br><br>
+
+    <label for="FinalGamut">Output gamut:</label><br>
+    <select name="FinalGamut" id="FinalGamut" onchange='onChange();'>
+      <option selected value="None">None (allow any value)</option>
+      <option value="ClampSRGB">Clamp to sRGB</option>
+      <option value="ClampP3">Clamp to P3</option>
+      <option value="ClampRec2020">Clamp to ITU-R BT.2020</option>
+      <option value="MarkSRGB">Mark out of sRGB</option>
+      <option value="MarkP3">Mark out of P3</option>
+      <option value="MarkRec2020">Mark out of ITU-R BT.2020</option>
+    </select>
   </td>
 
   <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
   <td style="text-align:center;">
-    Tonemap function:
-    <table>
-      <tr>
-        <td style="width:200px;">
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioFullHDR">
-          <label for="RadioFullHDR">Full HDR</label>
-        </td>
-        <td style="width:200px;">
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2100">
-          <label for="RadioBT2100">ITU-R BT.2100</label>
-        </td>
-      </tr>
-      <tr>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioReinhard" checked="true">
-          <label for="RadioReinhard">Reinhard</label>
-        </td>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2408">
-          <label for="RadioBT2408">ITU-R BT.2408</label>
-        </td>
-      </tr>
-      <tr>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2446A">
-          <label for="RadioBT2446A">ITU-R BT.2446 (A)</label>
-        </td>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioBT2446C">
-          <label for="RadioBT2446C">ITU-R BT.2446 (C)</label>
-        </td>
-        <td>
-        </td>
-      </tr>
-      <tr>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioNativePQ">
-          <label for="RadioNativePQ">Native PQ</label>
-        </td>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioNativeHLG">
-          <label for="RadioNativeHLG">Native HLG</label>
-        </td>
-      </tr>
-      <tr>
-        <td>
-          <input type="radio" name="render_mode" onchange='onToneMapChange();' id="RadioClamp">
-          <label for="RadioClamp">Clamp only</label>
-        </td>
-        <td>
-        </td>
-      </tr>
-    </table>
-  </td>
+    <div id="ParamsToneMapCurve">
+    <label for="ToneMapCurveInput" id="ToneMapCurveInputLabel">Tone map curve input:</label><br>
+    <select name="ToneMapCurveInput" id="ToneMapCurveInput" onchange='onChange();'>
+      <option selected value="maxRGB">maxRGB</option>
+      <option value="YRGB">YRGB</option>
+      <option value="RpGpBp">R'G'B'</option>
+    </select>
 
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+    </div>
 
-  <td style="text-align:center;">
-    Gamut mapping:<br>
-    <table>
-    <tr>
-      <td style="width:125px;">
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutNone">
-        <label for="RadioGamutNone">None</label>
-      </td>
-      <td style="width:125px;">
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutClamp">
-        <label for="RadioGamutClamp">Clamp RGB</label>
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleUV">
-        <label for="RadioGamutScaleUV">Scale UV</label>
-      </td>
-      <td>
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutScaleRGB">
-        <label for="RadioGamutScaleRGB">Scale RGB</label>
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutRGB_L2" checked="true">
-        <label for="RadioGamutRGB_L2">Min RGB L2</label>
-      </td>
-      <td>
-        <input type="radio" name="tonemap_clamping" onchange='onChange();' id="RadioGamutYUV_L2" hidden=true>
-        <label for="RadioGamutYUV_L2"  hidden=true>YUV Min L2</label>
-      </td>
-    </tr>
-    </table>
 
-    <input type="checkbox" onchange='onChange();' id="RadioGamutMark">
-    <label for="RadioGamutMark">Mark out of gamut</label>
-  </td>
-
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-  <td style="text-align:center;">
+    <div id="ParamsBT2100HLG">
     <p id="HLG_OOTF_Gamma"> ITU-R BT.2100<br>HLG Gamma: (unknown) </p>
     <table>
       <tr>
@@ -1123,6 +1189,7 @@ function main() {
         </td>
       </tr>
     </table>
+    </div>
   </td>
 </tr>
 </table>
