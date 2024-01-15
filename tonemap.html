@@ -27,6 +27,9 @@ var viewport_w;
 var viewport_h;
 var save_requested = false;
 
+var saved_settings1 = {};
+var saved_settings2 = {};
+
 let linearToSrgb = function (x) {
   let a = 1.1371188301409823;
   let c = 12.919999999992248;
@@ -1040,8 +1043,54 @@ function main() {
     save_requested = true;
     draw();
   }
-
   ButtonSave.addEventListener('click', saveCanvas);
+
+  ButtonPresetHDR.addEventListener('click', function() {
+    restoreSettings({
+        'ToneMap':'None',
+        'GamutMap':'None',
+        'FinalGamut':'None'})});
+
+  ButtonPresetChromium.addEventListener('click', function() {
+    restoreSettings({
+        'ToneMap':'Reinhard',
+        'ParamsToneMapCurve':'maxRGB',
+        'GamutMap':'Clamp',
+        'FinalGamut':'None'})});
+
+  let restoreSettings = function(settings) {
+    for (const [key, value] of Object.entries(settings)) {
+      document.getElementById(key).value = value;
+    }
+    draw();
+  }
+  let saveSettings = function() {
+    return {
+      'ToneMap': ToneMap.value,
+      'ParamsToneMapCurve': ParamsToneMapCurve.value,
+      'GamutMap': GamutMap.value,
+      'FinalGamut': FinalGamut.value,
+      'HLG_Lw_Nits': HLG_Lw_Nits.value,
+    };
+  }
+
+
+  ButtonPresetSave1.addEventListener('click', function() {
+    saved_settings1 = saveSettings();
+    ButtonPresetRestore1.disabled = false;
+  });
+  ButtonPresetRestore1.addEventListener('click', function() {
+    restoreSettings(saved_settings1);
+  });
+
+  ButtonPresetSave2.addEventListener('click', function() {
+    saved_settings2 = saveSettings();
+    ButtonPresetRestore2.disabled = false;
+  });
+  ButtonPresetRestore2.addEventListener('click', function() {
+    restoreSettings(saved_settings2);
+  });
+
   CLLIMaxNits.addEventListener('input', function (evt) {
     draw();
   });
@@ -1117,7 +1166,22 @@ function main() {
 
 <table style="margin-left: auto; margin-right: auto;">
   <tr>
-  <td style="width:50%;">
+  <td style="text-align:center;">
+    <p>Presets:</p>
+        <button type="button" id="ButtonPresetHDR">HDR</button>
+        <button type="button" id="ButtonPresetChromium">Chromium SDR</button>
+    <br><br>
+        <button type="button" id="ButtonPresetSave1">Save (1)</button>
+        <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
+    <br><br>
+        <button type="button" id="ButtonPresetSave2">Save (2)</button>
+        <button type="button" id="ButtonPresetRestore2" disabled>Restore (2)</button>
+  </td>
+
+  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+
+  <td style="">
     <label for="ToneMap">Tone mapping:</label><br>
     <select name="ToneMap" id="ToneMap" onchange='onChange();'>
       <option value="None">Full HDR</option>
@@ -1160,7 +1224,7 @@ function main() {
 
   <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-  <td style="text-align:center;">
+  <td style="width:250px;">
     <div id="ParamsToneMapCurve">
     <label for="ToneMapCurveInput" id="ToneMapCurveInputLabel">Tone map curve input:</label><br>
     <select name="ToneMapCurveInput" id="ToneMapCurveInput" onchange='onChange();'>
@@ -1168,9 +1232,7 @@ function main() {
       <option value="YRGB">YRGB</option>
       <option value="RpGpBp">R'G'B'</option>
     </select>
-
     </div>
-
 
     <div id="ParamsBT2100HLG">
     <p id="HLG_OOTF_Gamma"> ITU-R BT.2100<br>HLG Gamma: (unknown) </p>
