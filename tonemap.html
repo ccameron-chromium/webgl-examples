@@ -1054,7 +1054,7 @@ function main() {
   ButtonPresetChromium.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
-        'ParamsToneMapCurve':'maxRGB',
+        'ToneMapCurveInput':'maxRGB',
         'GamutMap':'Clamp',
         'FinalGamut':'None'})});
 
@@ -1189,9 +1189,9 @@ function main() {
       <option value="NativeHLG">Native HLG tone mapping (to display)</option>
       <option value="Clamp">Clamp to NDWL</option>
       <option value="Reinhard">Reinhard (map CLLI max to NDWL)</option>
-      <option value="BT2408">ITU-R BT.2408 Annex 5</option>
-      <option value="BT2446A">ITU-R BT.2446 Method A</option>
-      <option value="BT2446C">ITU-R BT.2446 Method C</option>
+      <option value="BT2408">ITU-R BT.2408 Annex 5 (map CLLI max to NDWL)</option>
+      <option value="BT2446A">ITU-R BT.2446 Method A (map CLLI max to NDWL)</option>
+      <option value="BT2446C">ITU-R BT.2446 Method C (hard-coded constants)</option>
       <option value="BT2100HLG">HLG rendered using ITU-R BT.2100 (with specified Lw)</option>
       <option value="HLGAs22">HLG reinterpreted as Gamma 2.2</option>
     </select>
