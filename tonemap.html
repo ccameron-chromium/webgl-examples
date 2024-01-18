@@ -57,6 +57,7 @@ const kGamutMapClamp = 2;
 const kGamutMapScaleRGB = 3;
 const kGamutMapScaleUV = 4;
 const kGamutMapL2RGB = 5;
+const kGamutMapOkLabConstantH = 6;
 
 const kToneMapNone = 0;
 const kToneMapNativePQ = 1;
@@ -68,10 +69,6 @@ const kToneMapBT2446A = 6;
 const kToneMapBT2446C = 7;
 const kToneMapBT2100HLG = 8;
 const kToneMapHLGAs22 = 9;
-
-const kFinalGamutNone = 0;
-const kFinalGamutMark = 1;
-const kFinalGamutClamp = 2;
 
 const kTransferSRGB = 0;
 const kTransferHLG = 1;
@@ -89,6 +86,7 @@ const fs_constants = `
   int kGamutMapScaleRGB = 3;
   int kGamutMapScaleUV = 4;
   int kGamutMapL2RGB = 5;
+  int kGamutMapOkLabConstantH = 6;
 
   int kToneMapNone = 0;
   int kToneMapNativePQ = 1;
@@ -101,10 +99,6 @@ const fs_constants = `
   int kToneMapBT2100HLG = 8;
   int kToneMapHLGAs22 = 9;
 
-  int kFinalGamutNone = 0;
-  int kFinalGamutMark = 1;
-  int kFinalGamutClamp = 2;
-
   int kTransferSRGB = 0;
   int kTransferHLG = 1;
   int kTransferPQ = 2;
@@ -113,6 +107,7 @@ const fs_constants = `
   int kGamutSRGB = 0;
   int kGamutP3 = 1;
   int kGamutRec2020 = 2;
+  int kFakeGamutOkLab = 3;
   `
 
 const vs = `attribute vec2 position;
@@ -158,6 +153,24 @@ const fs = `
   mat3 xyzd50_to_srgb = mat3( 3.13411215, -0.97878729,  0.07198304,
                              -1.61739246,  1.91627959, -0.22898585,
                              -0.4906334,   0.03345471,  1.40538513);
+  mat3 xyzd50_to_xyzd65 = mat3( 0.95547345, -0.02836971,  0.01231400,
+                               -0.02309854,  1.00999546, -0.02050770,
+                                0.06325931,  0.02104140,  1.33036594);
+  mat3 xyzd65_to_xyzd50 = mat3( 1.04792976,  0.02962780, -0.00924303,
+                                0.02294695,  0.99043437,  0.01505523,
+                               -0.05019232, -0.01707377,  0.75187428);
+  mat3 xyzd65_to_lms = mat3( 0.81902244, 0.03298367, 0.04817720,
+                             0.36190626, 0.92928685, 0.26423952,
+                            -0.12887378, 0.03614467, 0.63354783);
+  mat3 lms_to_xyzd65 = mat3( 1.22687987, -0.04057576, -0.07637295,
+                            -0.55781500,  1.11228683, -0.42149332,
+                             0.28139105, -0.07171107,  1.58692402);
+  mat3 lms_to_oklab = mat3( 0.21045426,  1.97799850,  0.02590404,
+                            0.79361779, -2.42859221,  0.78277177,
+                           -0.00407205,  0.45059371, -0.80867577);
+  mat3 oklab_to_lms = mat3( 1.00000000,  1.00000001,  1.00000005,
+                            0.39633779, -0.10556134, -0.08948418,
+                            0.21580376, -0.06385417, -1.29148554);
 
   // Y_rec2020 is the luminance vector in rec2020 primaries.
   vec3 rec2020_rgb_to_yuv(vec3 rgb) {
@@ -175,6 +188,19 @@ const fs = `
          1.47459975, -0.57135301, -0.00000024,  0.0,
         -0.73747933,  0.36804268, -0.9409294,   1.0);
     return (yuv_to_rgb * vec4(yuv, 1.0)).rgb;
+  }
+
+  vec3 xyzd50_to_oklab(vec3 xyzd50) {
+    vec3 lms = xyzd65_to_lms * xyzd50_to_xyzd65 * xyzd50;
+    vec3 lms_cbrt = (sign(lms) * pow(abs(lms), vec3(1.0/3.0)));
+    vec3 Lab = lms_to_oklab * lms_cbrt;
+    return Lab;
+  }
+
+  vec3 oklab_to_xyzd50(vec3 Lab) {
+    vec3 lms_cbrt = oklab_to_lms * Lab;
+    vec3 lms = sign(lms_cbrt) * pow(abs(lms_cbrt), vec3(3.0));
+    return xyzd65_to_xyzd50 * lms_to_xyzd65 * lms;
   }
 
   float srgbToLinear(float x) {
@@ -352,29 +378,6 @@ const fs = `
     return alpha * a + (1.0 - alpha) * b;
   }
 
-  vec3 mark_out_of_range(vec3 c) {
-    float kEpsilon;
-    kEpsilon = 0.1;
-    if (c.r < -kEpsilon || c.r > 1.0 + kEpsilon ||
-        c.g < -kEpsilon || c.g > 1.0 + kEpsilon ||
-        c.b < -kEpsilon || c.b > 1.0 + kEpsilon) {
-      return vec3(1.0, 0.0, 0.0);
-    }
-    kEpsilon = 0.01;
-    if (c.r < -kEpsilon || c.r > 1.0 + kEpsilon ||
-        c.g < -kEpsilon || c.g > 1.0 + kEpsilon ||
-        c.b < -kEpsilon || c.b > 1.0 + kEpsilon) {
-      return vec3(1.0, 0.0, 0.0);
-    }
-    kEpsilon = 0.00001;
-    if (c.r < -kEpsilon || c.r > 1.0 + kEpsilon ||
-        c.g < -kEpsilon || c.g > 1.0 + kEpsilon ||
-        c.b < -kEpsilon || c.b > 1.0 + kEpsilon) {
-      return vec3(1.0, 0.0, 0.0);
-    }
-    return c;
-  }
-
   vec3 hlgRefOotf(vec3 c) {
     float Y = rec2020_rgb_to_yuv(c).r;
     c *= pow(Y, 0.2);
@@ -408,21 +411,98 @@ const fs = `
     return (1.0 - alpha) * c1 + alpha * c2;
   }
 
-  // Perform gamut mapping on the specified rec2020 color.
-  vec3 gamutMap(vec3 c) {
-    if (gamut_map_mode == kGamutMapClamp) {
+  vec3 convert(vec3 c, int from, int to) {
+    if (from == to) {
+      return c;
+    }
+
+    // Convert to XYZD50
+    if (from == kGamutSRGB) {
+      c = srgb_to_xyzd50 * c;
+    }
+    else if (from == kGamutP3) {
+      c = p3_to_xyzd50 * c;
+    }
+    else if (from == kGamutRec2020) {
+      c = rec2020_to_xyzd50 * c;
+    }
+    else if (from == kFakeGamutOkLab) {
+      c = oklab_to_xyzd50(c);
+    }
+
+    // Convert from from XYZD50
+    if (to == kGamutSRGB) {
+      c = xyzd50_to_srgb * c;
+    }
+    else if (to == kGamutP3) {
+      c = xyzd50_to_p3 * c;
+    }
+    else if (to == kGamutRec2020) {
+      c = xyzd50_to_rec2020 * c;
+    }
+    else if (to == kFakeGamutOkLab) {
+      c = xyzd50_to_oklab(c);
+    }
+
+    return c;
+  }
+
+  bool inUnitCube(vec3 c, float epsilon) {
+    return c.r >= -epsilon && c.r <= 1.0 + epsilon &&
+           c.g >= -epsilon && c.g <= 1.0 + epsilon &&
+           c.b >= -epsilon && c.b <= 1.0 + epsilon;
+  }
+
+  vec3 gamutMapOkLabConstantH(vec3 c, int gamut) {
+    if (inUnitCube(c, 0.0)) {
+      return c;
+    }
+    vec3 Lab = convert(c, gamut, kFakeGamutOkLab);
+    vec3 Loo = vec3(min(Lab.x, 1.0), 0.0, 0.0);
+    float alpha0 = 0.0;
+    float alpha1 = 1.0;
+    for (int i = 0; i < 8; ++i) {
+      float alpha_test = 0.5 * (alpha0 + alpha1);
+      vec3 Lab_test = alpha_test * Lab + (1.0 - alpha_test) * Loo;
+      vec3 c_test = convert(Lab_test, kFakeGamutOkLab, gamut);
+      if (inUnitCube(c_test, 0.0)) {
+        alpha0 = alpha_test;
+      } else {
+        alpha1 = alpha_test;
+      }
+    }
+    float alpha_final = 0.5 * (alpha0 + alpha1);
+    vec3 Lab_final = alpha_final * Lab + (1.0 - alpha_final) * Loo;
+    return convert(Lab_final, kFakeGamutOkLab, gamut);
+  }
+
+  // Gamut map to |gamut| using |mode|. The input color |c| must be rec2020.
+  vec3 gamutMap(vec3 c, int mode, int gamut) {
+    if (mode == kGamutMapNone) {
+      return c;
+    }
+
+    // Convert to the space for gamut mapping.
+    c = convert(c, kGamutRec2020, gamut);
+
+    if (mode == kGamutMapClamp) {
       c = clamp(c, 0.0, 1.0);
     }
-    if (gamut_map_mode == kGamutMapScaleUV) {
+    if (mode == kGamutMapMark) {
+      if (!inUnitCube(c, 1.0 / 255.0)) {
+        c = vec3(1.0, 0.0, 0.0);
+      }
+    }
+    if (mode == kGamutMapScaleUV) {
       float Y = rec2020_rgb_to_yuv(c).r;
       c = intersectWithUnitCube(c, vec3(Y, Y, Y));
       c = clamp(c, 0.0, 1.0);
     }
-    if (gamut_map_mode == kGamutMapScaleRGB) {
+    if (mode == kGamutMapScaleRGB) {
       c = intersectWithUnitCube(c, vec3(0.0, 0.0, 0.0));
       c = clamp(c, 0.0, 1.0);
     }
-    if (gamut_map_mode == kGamutMapL2RGB) {
+    if (mode == kGamutMapL2RGB) {
       // This is finding the nearest L2 point in RGB space that is in the
       // plane defined by black, white, and the color c itself.
       float M = max(max(c.r, c.g), c.b);
@@ -432,34 +512,16 @@ const fs = `
         vec3 w = (1.0 - 1.0/M) * c;
         float alpha = dot(v, w) / dot(v, v);
         c = ((1.0 - alpha)/M) * c + (alpha)*u;
-        // c = nearestPointOnSegment(c, c / maxRGB, vec3(1.0, 1.0, 1.0));
       }
       c = clamp(c, 0.0, 1.0);
     }
-    return c;
-  }
-
-  vec3 finalGamut(vec3 c) {
-    // Convert to the space for gamut mapping.
-    if (final_gamut == kGamutSRGB) {
-      c = xyzd50_to_srgb * rec2020_to_xyzd50 * c;
-    } else if (final_gamut == kGamutP3) {
-      c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
-    }
-
-    if (final_gamut_mode == kFinalGamutNone) {
-    } else if (final_gamut_mode == kFinalGamutMark) {
-      c = mark_out_of_range(c);
-    } else if (final_gamut_mode == kFinalGamutClamp) {
-      c = clamp(c, 0.0, 1.0);
+    if (mode == kGamutMapOkLabConstantH) {
+      c = gamutMapOkLabConstantH(c, gamut);
     }
 
     // Convert back to Rec2020.
-    if (final_gamut == kGamutSRGB) {
-      c = xyzd50_to_rec2020 * srgb_to_xyzd50 * c;
-    } else if (final_gamut == kGamutP3) {
-      c = xyzd50_to_rec2020 * p3_to_xyzd50 * c;
-    }
+    c = convert(c, gamut, kGamutRec2020);
+
     return c;
   }
 
@@ -467,6 +529,9 @@ const fs = `
     vec3 c = texture2D(texture, texcoord).rgb;
 
     // Convert to linear.
+    if (signal_transfer == kTransferSRGB) {
+      c = ndwl_white_nits * srgbToLinear(c);
+    }
     if (signal_transfer == kTransferPQ) {
       c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
     }
@@ -583,10 +648,10 @@ const fs = `
     }
 
     // Perform gamut mapping in Rec2020.
-    c = gamutMap(c);
+    c = gamutMap(c, gamut_map_mode, kGamutRec2020);
 
-    // Clamp or mark out-of-gamut for final gamut.
-    c = finalGamut(c);
+    // Perform SDR gamut mapping.
+    c = gamutMap(c, final_gamut_mode, final_gamut);
 
     // Convert from rec2020 to P3.
     c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
@@ -800,7 +865,7 @@ let draw = function() {
     default:
       gl.drawingBufferColorSpace = 'display-p3';
       if (`configureHighDynamicRange` in canvas) {
-        if (FinalGamut.value == 'None') {
+        if (true || FinalGamutMap.value == 'None') {
           canvas.configureHighDynamicRange({ mode:'extended' });
         } else {
           canvas.configureHighDynamicRange({});
@@ -809,64 +874,47 @@ let draw = function() {
       break;
   }
 
-  let gamut_map_desc = '';
-  switch (GamutMap.value) {
-    case 'None':
-      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapNone);
-      break;
-    case 'Clamp':
-      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapClamp);
-      gamut_map_desc = '-clamp_rgb';
-      break;
-    case 'ScaleUV':
-      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapScaleUV);
-      gamut_map_desc = '-scale_uv';
-      break;
-    case 'ScaleRGB':
-      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapScaleRGB);
-      gamut_map_desc = '-scale_rgb';
-      break;
-    case 'RGB-L2':
-      gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), kGamutMapL2RGB);
-      gamut_map_desc = '-rgbL2';
-      break;
-    default:
-      console.log('Bug in gamut mapping selector');
+  let gamutMapToConst = function(value) {
+    switch (value) {
+      case 'None':
+        return kGamutMapNone;
+      case 'Mark':
+        return kGamutMapMark;
+      case 'Clamp':
+        return kGamutMapClamp;
+      case 'ScaleUV':
+        return kGamutMapScaleUV;
+      case 'ScaleRGB':
+        return kGamutMapScaleRGB;
+      case 'RGB-L2':
+        return kGamutMapL2RGB;
+      case 'OkLabConstantHue':
+        return kGamutMapOkLabConstantH;
+      default:
+        console.log('Bug in gamut mapping selector');
+    }
   }
-  desc += gamut_map_desc;
+
+  let gamut_map_desc = '';
+  gl.uniform1i(gl.getUniformLocation(program, 'gamut_map_mode'), gamutMapToConst(GamutMap.value));
+  gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), gamutMapToConst(FinalGamutMap.value));
 
   switch (FinalGamut.value) {
-    case 'None':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutNone);
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
-      break;
-    case 'ClampSRGB':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
+    case 'srgb':
       gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutSRGB);
       break;
-    case 'ClampP3':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
+    case 'p3':
       gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutP3);
       break;
-    case 'ClampRec2020':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutClamp);
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
-      break;
-    case 'MarkSRGB':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutSRGB);
-      break;
-    case 'MarkP3':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutP3);
-      break;
-    case 'MarkRec2020':
-      gl.uniform1i(gl.getUniformLocation(program, 'final_gamut_mode'), kFinalGamutMark);
+    case 'rec2020':
       gl.uniform1i(gl.getUniformLocation(program, 'final_gamut'), kGamutRec2020);
       break;
   }
 
   switch (SignalTransfer.value) {
+    case 'srgb':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferSRGB);
+      break;
     case 'pq':
       gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferPQ);
       break;
@@ -1005,6 +1053,9 @@ let onChange = function() {
   if (SignalTransfer.value == 'hlg') {
     CLLIMaxNits.value = 1000;
   }
+  if (SignalTransfer.value == 'srgb') {
+    CLLIMaxNits.value = 203;
+  }
 
   draw();
 }
@@ -1049,14 +1100,16 @@ function main() {
     restoreSettings({
         'ToneMap':'None',
         'GamutMap':'None',
-        'FinalGamut':'None'})});
+        'FinalGamutMap':'None',
+        'FinalGamut':'rec2020'})});
 
   ButtonPresetChromium.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
         'ToneMapCurveInput':'maxRGB',
         'GamutMap':'Clamp',
-        'FinalGamut':'None'})});
+        'FinalGamutMap':'None',
+        'FinalGamut':'rec2020'})});
 
   let restoreSettings = function(settings) {
     for (const [key, value] of Object.entries(settings)) {
@@ -1069,6 +1122,7 @@ function main() {
       'ToneMap': ToneMap.value,
       'ToneMapCurveInput': ToneMapCurveInput.value,
       'GamutMap': GamutMap.value,
+      'FinalGamutMap': FinalGamutMap.value,
       'FinalGamut': FinalGamut.value,
       'HLG_Lw_Nits': HLG_Lw_Nits.value,
     };
@@ -1125,7 +1179,8 @@ function main() {
     <td>
       <label for="SignalTransfer">Image transfer function:</label>
       <select name="SignalTransfer" id="SignalTransfer" onchange='onChange();'>
-        <option value="pq">PQ</option>
+        <option value="srgb">sRGB</option>
+        <option value="pq" selected>PQ</option>
         <option value="hlg">HLG</option>
       </select>
 
@@ -1198,7 +1253,7 @@ function main() {
 
   <br><br>
 
-    <label for="GamutMap">Gamut mapping in Rec2020:</label><br>
+    <label for="GamutMap">Tone mapping gamut map to Rec2020:</label><br>
     <select name="GamutMap" id="GamutMap" onchange='onChange();'>
       <option selected value="None">None (allow out-of-gamut values)</option>
       <option value="Clamp">Clamp RGB to target gamut</option>
@@ -1210,15 +1265,20 @@ function main() {
 
   <br><br>
 
-    <label for="FinalGamut">Output gamut:</label><br>
+    <label for="FinalGamut">SDR gamut mapping:</label><br>
+    <select name="FinalGamutMap" id="FinalGamutMap" onchange='onChange();'>
+      <option selected value="None">None (allow out of gamut values)</option>
+      <option value="Mark">Mark out of gamut colors as red</option>
+      <option value="Clamp">Clamp</option>
+      <option value="ScaleRGB">Scale RGB to gamut</option>
+      <option value="ScaleUV">Scale chroma (UV) to gamut</option>
+      <option value="RGB-L2">Min RGB L2</option>
+      <option value="OkLabConstantHue">OkLab constant hue</option>
+    </select>
     <select name="FinalGamut" id="FinalGamut" onchange='onChange();'>
-      <option selected value="None">None (allow any value)</option>
-      <option value="ClampSRGB">Clamp to sRGB</option>
-      <option value="ClampP3">Clamp to P3</option>
-      <option value="ClampRec2020">Clamp to ITU-R BT.2020</option>
-      <option value="MarkSRGB">Mark out of sRGB</option>
-      <option value="MarkP3">Mark out of P3</option>
-      <option value="MarkRec2020">Mark out of ITU-R BT.2020</option>
+      <option value="srgb">sRGB</option>
+      <option value="p3">P3</option>
+      <option value="rec2020" selected>ITU-R BT.2020</option>
     </select>
   </td>
 
