@@ -453,6 +453,12 @@ var plane_vertices;
 var plane_indices;
 var plane_indices_count;
 
+var polyhedron_vertices;
+var polyhedron_solid_indices;
+var polyhedron_solid_indices_count;
+var polyhedron_wire_indices;
+var polyhedron_wire_indices_count;
+
 var plane_wire_indices = [0, 0];
 var plane_wire_indices_count = [0, 0];
 
@@ -1258,6 +1264,86 @@ let matrixConcat = function(a) {
   return c;
 }
 
+let makePolyhedron = function() {
+  let data = null;
+  let i = 0;
+
+  data = new Float32Array(4 * 8);
+  data[i++] = 0.0; data[i++] = 0.0; data[i++] = 0.0; data[i++] = 1.0;
+  data[i++] = 0.0; data[i++] = 0.0; data[i++] = 1.0; data[i++] = 1.0;
+  data[i++] = 0.0; data[i++] = 1.0; data[i++] = 0.0; data[i++] = 1.0;
+  data[i++] = 0.0; data[i++] = 1.0; data[i++] = 1.0; data[i++] = 1.0;
+  data[i++] = 1.0; data[i++] = 0.0; data[i++] = 0.0; data[i++] = 1.0;
+  data[i++] = 1.0; data[i++] = 0.0; data[i++] = 1.0; data[i++] = 1.0;
+  data[i++] = 1.0; data[i++] = 1.0; data[i++] = 0.0; data[i++] = 1.0;
+  data[i++] = 1.0; data[i++] = 1.0; data[i++] = 1.0; data[i++] = 1.0;
+  
+  polyhedron_vertices = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, polyhedron_vertices);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+
+  let iK = 0;
+  let iB = 1;
+  let iG = 2;
+  let iC = 3;
+  let iR = 4;
+  let iM = 5;
+  let iY = 6;
+  let iW = 7;
+  data = new Uint16Array(12 * 3);
+  i = 0;
+  data[i++] = iW; data[i++] = iM; data[i++] = iR;
+  data[i++] = iW; data[i++] = iB; data[i++] = iM;
+  data[i++] = iW; data[i++] = iC; data[i++] = iB;
+  data[i++] = iW; data[i++] = iG; data[i++] = iC;
+  data[i++] = iW; data[i++] = iY; data[i++] = iG;
+  data[i++] = iW; data[i++] = iR; data[i++] = iY;
+
+  data[i++] = iK; data[i++] = iR; data[i++] = iM;
+  data[i++] = iK; data[i++] = iM; data[i++] = iB;
+  data[i++] = iK; data[i++] = iB; data[i++] = iC;
+  data[i++] = iK; data[i++] = iC; data[i++] = iG;
+  data[i++] = iK; data[i++] = iG; data[i++] = iY;
+  data[i++] = iK; data[i++] = iY; data[i++] = iR;
+
+  polyhedron_solid_indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, polyhedron_solid_indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  polyhedron_solid_indices_count = 12*3;
+
+  data = new Uint16Array(18 * 2);
+  i = 0;
+  data[i++] = iW; data[i++] = iM;
+  data[i++] = iW; data[i++] = iB;
+  data[i++] = iW; data[i++] = iC;
+  data[i++] = iW; data[i++] = iG;
+  data[i++] = iW; data[i++] = iY;
+  data[i++] = iW; data[i++] = iR;
+
+  data[i++] = iM; data[i++] = iR;
+  data[i++] = iB; data[i++] = iM;
+  data[i++] = iC; data[i++] = iB;
+  data[i++] = iG; data[i++] = iC;
+  data[i++] = iY; data[i++] = iG;
+  data[i++] = iR; data[i++] = iY;
+
+  data[i++] = iK; data[i++] = iR;
+  data[i++] = iK; data[i++] = iM;
+  data[i++] = iK; data[i++] = iB;
+  data[i++] = iK; data[i++] = iC;
+  data[i++] = iK; data[i++] = iG;
+  data[i++] = iK; data[i++] = iY;
+
+  polyhedron_wire_indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, polyhedron_wire_indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  polyhedron_wire_indices_count = 18*2;
+}
+
+
+const kPolyhedronWire = -2;
+const kPolyhedronSolid = -1;
+const kSolid     = null;
 const kGrid1x1   = 0;
 const kGrid4x4   = 1;
 const kGrid16x16 = 2;
@@ -1420,7 +1506,28 @@ let drawPlane = function(program) {
   gl.drawElements(gl.TRIANGLES, plane_indices_count, gl.UNSIGNED_SHORT, 0);
 }
 
+let drawPolyhedron = function(program, grid_index) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, polyhedron_vertices);
+ 
+  let positionLocation = gl.getAttribLocation(program, 'position');
+  gl.vertexAttribPointer(positionLocation, 4, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(positionLocation);
+ 
+  if (grid_index == kPolyhedronWire) {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, polyhedron_wire_indices);
+    gl.drawElements(gl.LINES, polyhedron_wire_indices_count, gl.UNSIGNED_SHORT, 0);
+  } else {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, polyhedron_solid_indices);
+    gl.drawElements(gl.TRIANGLES, polyhedron_solid_indices_count, gl.UNSIGNED_SHORT, 0);
+  }
+}
+
 let drawCube = function(program, grid_index = null, scale = 1.0) {
+  if (grid_index == kPolyhedronWire || grid_index == kPolyhedronSolid) {
+    drawPolyhedron(program, grid_index);
+    return;
+  }
+
   const axes = ['x', 'x', 'x', 'x', 'y', 'y'];
   const angles = [0, 90, 180, 270, 90, 270];
   for (let i = 0; i < 6; ++i) {
@@ -1599,7 +1706,7 @@ let drawToFbo = function(width, height) {
                       slice_hdr ? slice_vector : no_slice_vector);
 
         gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), ContentHdrHeadroom.value);
-        drawCube(gamut_program, null, 1.0);
+        drawCube(gamut_program, kSolid, 1.0);
       }
 
       // SDR
@@ -1608,7 +1715,7 @@ let drawToFbo = function(width, height) {
         gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
                       slice_sdr ? slice_vector : no_slice_vector);
         gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
-        drawCube(gamut_program, null, 1.0);
+        drawCube(gamut_program, kSolid, 1.0);
       }
 
 
@@ -1674,7 +1781,7 @@ let drawToFbo = function(width, height) {
   }
 
   // Draw a sphere!
-  {
+  if (TestPoint.checked) {
     gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
 
     let matrices = []
@@ -1702,6 +1809,29 @@ let drawToFbo = function(width, height) {
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
 
   gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+
+  if (Polyhedron.checked) {
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), gamut_space);
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
+    gl.enable(gl.CULL_FACE);
+
+    // HDR
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1, 1);
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
+    gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
+    drawCube(gamut_program, kPolyhedronSolid, 1.0);
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+
+    // Wireframe
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [0, 0, 0, 0]);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), gamut_space);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+
+    // SDR
+    drawCube(gamut_program, kPolyhedronWire, 1.0);
+  }
 
   {
     // Wireframe
@@ -1985,6 +2115,7 @@ let initializeGL = function() {
   black_program = compileShader(gl, black_vs, black_fs);
   gamut_program = compileShader(gl, gamut_vs, gamut_fs);
   makePlane();
+  makePolyhedron();
 }
 
 function main() {
@@ -2032,6 +2163,9 @@ Gamut volume color space<br>
 
 <input type="radio" name="volume" onchange='onChange();' id="RadioVolume_Rec2020" checked>
 <label for="RadioVolume_Rec2020">Rec2020</label>
+
+<input id="Polyhedron" type="checkbox" onchange='onChange();'/>
+<label for="Polyhedron">Polyhedron</label>
 </div>
 
 <div>
@@ -2059,11 +2193,13 @@ Geometric coordinate color space<br>
 
 Test point:<br>
 <label for="TestX" id="TextXLabel">X</label>
-<input id="TestX" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestX" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
 <label for="TestY" id="TextYLabel">Y</label>
-<input id="TestY" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestY" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
 <label for="TestZ" id="TextZLabel">Z</label>
-<input id="TestZ" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestZ" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<label for="TestPoint">Draw</label>
+<input id="TestPoint" type="checkbox" onchange='onChange();'/>
 
 <p>
 <b>HDR</b>
