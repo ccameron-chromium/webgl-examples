@@ -206,9 +206,11 @@ const fs = `
   float srgbToLinear(float x) {
     if (x < 0.0)
       return 0.0;
+    if (x > 1.0)
+      return 1.0;
     if (x < 0.04045)
       return x / 12.92;
-    return pow((x + 0.055)/1.044, 2.4);
+    return pow((x + 0.055)/1.055, 2.4);
   }
   float linearToSrgb(float x) {
     if (x < 0.003130800090713953)
@@ -530,7 +532,8 @@ const fs = `
 
     // Convert to linear.
     if (signal_transfer == kTransferSRGB) {
-      c = ndwl_white_nits * srgbToLinear(c);
+      c = srgbToLinear(c);
+      c = ndwl_white_nits * c;
     }
     if (signal_transfer == kTransferPQ) {
       c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));

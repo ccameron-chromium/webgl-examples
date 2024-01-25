@@ -1,0 +1,133 @@
+<html>
+<body>
+
+<p>
+Right after this is a 1x1 PQ image, that, because of bugs, causes CSS colors to be un-clamped from the SDR range ... this needs to be fixed, but until it is fixed, it allows visualizing colors that go out of the SDR gamut.
+<img width=1px src="gradient-pq.avif">
+</p>
+
+<p style="background-color:oklch(90% 90% 0deg);">
+This is the color oklch(90% 90% 0deg) aka color(display-p3 1.406 0.346 0.825).<br>
+Some HDR displays (e.g, the higher end Macbook Pros) can produce this color.
+It is what I would call a "brilliant magenta".
+</p>
+
+<p style="background-color:oklch(90% 7.41% 0deg);">
+This is the color oklch(90% 7.41% 0), which is the above color gamut mapped to the border of the P3 gamut.
+</p>
+
+<p style="background-color:oklch(90% 27.5% 0deg);">
+This is the color oklch(90% 27.5% 0), which is the above color gamut mapped to the border of the Rec2020 gamut.
+</p>
+
+
+<p style="background-color:color(display-p3 1.0 0.346 0.825);">
+This is the color(display-p3 1.0 0.346 0.825). This is the result of component-wise clamping in P3 space.
+</p>
+
+<p style="background-image: linear-gradient(90deg, oklab(0.1% -0.03 0.32), oklab(99.9% -0.03 0.32));">
+hi
+</p>
+
+
+<!--
+
+
+$export $pure half3 $css_gamut_map_oklab(half3 oklab) {
+    // Constants for the normal vector of the plane formed by white, black, and
+    // the specified vertex of the gamut.
+    half2 normal_R = half2(0.409702, -0.912219);
+    half2 normal_M = half2(-0.397919, -0.917421);
+    half2 normal_B = half2(-0.906800, 0.421562);
+    half2 normal_C = half2(-0.171122, 0.985250);
+    half2 normal_G = half2(0.460276, 0.887776);
+    half2 normal_Y = half2(0.947925, 0.318495);
+
+    // For the triangles formed by white (W) or black (K) with the vertices
+    // of Yellow and Red (YR), Red and Magenta (RM), etc, the constants to be
+    // used to compute the intersection of a line of constant hue and luminance
+    // with that plane.
+    half  c0_YR = 0.091132;
+    half2 cW_YR = half2(0.070370, 0.034139);
+    half2 cK_YR = half2(0.018170, 0.378550);
+    half  c0_RM = 0.113902;
+    half2 cW_RM = half2(0.090836, 0.036251);
+    half2 cK_RM = half2(0.226781, 0.018764);
+    half  c0_MB = 0.161739;
+    half2 cW_MB = half2(-0.008202, -0.264819);
+    half2 cK_MB = half2( 0.187156, -0.284304);
+    half  c0_BC = 0.102047;
+    half2 cW_BC = half2(-0.014804, -0.162608);
+    half2 cK_BC = half2(-0.276786,  0.004193);
+    half  c0_CG = 0.092029;
+    half2 cW_CG = half2(-0.038533, -0.001650);
+    half2 cK_CG = half2(-0.232572, -0.094331);
+    half  c0_GY = 0.081709;
+    half2 cW_GY = half2(-0.034601, -0.002215);
+    half2 cK_GY = half2( 0.012185,  0.338031);
+
+    half L = oklab.r;
+    half one_minus_L = 1.0 - oklab.r;
+    half2 ab = half2(oklab.y, oklab.z);
+
+    // Find the planes to intersect with and set the constants based on those
+    // planes.
+    half c0;
+    half2 cW;
+    half2 cK;
+    if (dot(ab, normal_R) < 0.0) {
+        if (dot(ab, normal_G) < 0.0) {
+            if (dot(ab, normal_C) < 0.0) {
+                c0 = c0_BC; cW = cW_BC; cK = cK_BC;
+            } else {
+                c0 = c0_CG; cW = cW_CG; cK = cK_CG;
+            }
+        } else {
+            if (dot(ab, normal_Y) < 0.0) {
+                c0 = c0_GY; cW = cW_GY; cK = cK_GY;
+            } else {
+                c0 = c0_YR; cW = cW_YR; cK = cK_YR;
+            }
+        }
+    } else {
+        if (dot(ab, normal_B) < 0.0) {
+            if (dot(ab, normal_M) < 0.0) {
+                c0 = c0_RM; cW = cW_RM; cK = cK_RM;
+            } else {
+                c0 = c0_MB; cW = cW_MB; cK = cK_MB;
+            }
+        } else {
+            c0 = c0_BC; cW = cW_BC; cK = cK_BC;
+        }
+    }
+
+    // Perform the intersection.
+    half alpha = 1.0;
+
+    // Intersect with the plane with white.
+    half w_denom = dot(cW, ab);
+    if (w_denom > 0.0) {
+        half w_num = c0*one_minus_L;
+        if (w_num < w_denom) {
+            alpha = min(alpha, w_num / w_denom);
+        }
+    }
+
+    // Intersect with the plane with black.
+    half k_denom = dot(cK, ab);
+    if (k_denom > 0.0) {
+        half k_num = c0*L;
+        if (k_num < k_denom) {
+            alpha = min(alpha,  k_num / k_denom);
+        }
+    }
+
+    // Attenuate the ab coordinate by alpha.
+    oklab.yz *= alpha;
+    return oklab;
+}
+
+-->
+
+</body>
+</html>

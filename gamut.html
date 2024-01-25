@@ -493,6 +493,7 @@ const gamut_common = `
   const int kRec2020Linear = 3;
   const int kOkLab = 4;
   const int kWavelength = 5;
+  const int kSphere = 8;
 
   uniform sampler2D texture_xyzd50_lambda;
   uniform highp int input_position_type;
@@ -891,7 +892,7 @@ const blit_fs = `
             continue;
           }
           float cos_theta = dot(n, n_ij);
-          if (cos_theta < 0.9) {
+          if (cos_theta < 0.6) {
             return 1.0;
           }
         }
@@ -937,6 +938,7 @@ const kP3Linear = 6;
 const kRec2020Linear = 3;
 const kOkLab = 4;
 const kWavelength = 5;
+const kSphere = 8;
 
 const gamut_vs = `#version 300 es
     precision highp float;
@@ -950,16 +952,31 @@ const gamut_vs = `#version 300 es
     out vec3 v_normal;
     ` + gamut_common + `
     void main() {
-      vec3 in_color = (matrixSubModel * position).xyz;
-      v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
-      v_position = convert(v_xyzd50, kXYZ, output_position_type);
+      if (input_position_type == kSphere) {
+        float phi   = 2.0*3.141593*position.y;
+        float theta = 2.0*3.141593*position.x;
+        vec3 position_surface = (matrixSubModel * vec4(
+           cos(phi),
+           sin(theta) * sin(phi),
+           cos(theta) * sin(phi),
+           1.0)).xyz;
+        vec3 position_center = (matrixSubModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 
-      // Use finite difference for normals because work is hard.
-      vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
-      vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
-      vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, input_hdr_headroom, output_position_type, 1.0);
-
-      v_normal = normalize(out_color_fd_normal - v_position);
+        v_xyzd50 = convert(position_center, output_position_type, input_hdr_headroom, kXYZ, 1.0);
+        v_position = position_surface;
+        v_normal = normalize(position_surface - position_center);
+      } else {
+        vec3 in_color = (matrixSubModel * position).xyz;
+        v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
+        v_position = convert(v_xyzd50, kXYZ, output_position_type);
+       
+        // Use finite difference for normals because work is hard.
+        vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
+        vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
+        vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, input_hdr_headroom, output_position_type, 1.0);
+       
+        v_normal = normalize(out_color_fd_normal - v_position);
+      }
 
       gl_Position = matrixProjection * matrixModelView * vec4(v_position, 1.0);
     }`;
@@ -1497,17 +1514,34 @@ let drawToFbo = function(width, height) {
     moveElementToPoint(Axis1,      matrixModelViewProjection, [0, 1,   0.5, 1]);
     moveElementToPoint(Axis2,      matrixModelViewProjection, [0, 0.5,   1, 1]);
     Axis0.innerText = 'L=1'; Axis1.innerText = 'a=0.5'; Axis2.innerText = 'b=0.5';
+  }
 
-    if (RadioGeo_OkLab.checked)
-      out_space = kOkLab;
+  let testPoint = [Number(TestX.value), Number(TestY.value), Number(TestZ.value)];
+
+  if (RadioGeo_OkLab.checked) {
+    out_space = kOkLab;
+
+    testPoint[1] += 0.5;
+    testPoint[2] += 0.5;
+    TextXLabel.innerText = 'L';
+    TextYLabel.innerText = 'a';
+    TextZLabel.innerText = 'b';
   }
   if (RadioGeo_XYZ.checked) {
     Axis0.innerText = 'X'; Axis1.innerText = 'Y'; Axis2.innerText = 'Z';
     out_space = kXYZ;
+
+    TextXLabel.innerText = 'X';
+    TextYLabel.innerText = 'Y';
+    TextZLabel.innerText = 'Z';
   }
   if (RadioGeo_Rec2020YUV.checked) {
     Axis0.innerText = 'Y'; Axis1.innerText = 'U'; Axis2.innerText = 'V';
     out_space = kRec2020YUV;
+
+    TextXLabel.innerText = 'Y';
+    TextYLabel.innerText = 'U';
+    TextZLabel.innerText = 'V';
   }
 
   let gamut_space = kSRGB;
@@ -1528,23 +1562,23 @@ let drawToFbo = function(width, height) {
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
   gl.uniform1f(gl.getUniformLocation(gamut_program, 'tonemap_hdr_headroom'), DisplayHdrHeadroom.value);
 
-  gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
+  let gamut_map_type = 0;
   if (RadioGamutMap_Clamp.checked) {
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 1);
+    gamut_map_type = 1;
   }
   if (RadioGamutMap_CSS.checked) {
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 2);
+    gamut_map_type = 2;
   }
   if (RadioGamutMap_CSS_OPT.checked) {
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 5);
+    gamut_map_type = 5;
   }
   if (RadioGamutMap_L2.checked) {
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 3);
+    gamut_map_type = 3;
   }
   if (RadioGamutMap_Y.checked) {
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 4);
+    gamut_map_type = 4;
   }
-
+  gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), gamut_map_type);
 
   const draw_sdr_solid = GamutRender_Solid.checked || GamutRender_SdrSolid_HdrWireframe.checked;
   const draw_hdr_solid = GamutRender_Solid.checked;
@@ -1637,11 +1671,35 @@ let drawToFbo = function(width, height) {
     gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
     drawPlane(gamut_program);
     }
+  }
+
+  // Draw a sphere!
+  {
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+
+    let matrices = []
+    matrices.push(matrixTranslation(testPoint[0], testPoint[1], testPoint[2]));
+    let radius = 0.025;
+    matrices.push(matrixScale(2*radius, 2*radius, 2*radius));
+    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixConcat(matrices));
+
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), kSphere);
+    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture_xyzd50_lambda);
+
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
+    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
+
+    // drawGrid(gamut_program, kGrid32x32);
+    drawPlane(gamut_program);
 
     gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
     gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
-
   }
+
+  gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+  gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
 
   gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
 
@@ -1998,6 +2056,14 @@ Geometric coordinate color space<br>
 <label for="RadioGeo_Rec2020YUV">Rec2020 YUV</label>
 </div>
 </p>
+
+Test point:<br>
+<label for="TestX" id="TextXLabel">X</label>
+<input id="TestX" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<label for="TestY" id="TextYLabel">Y</label>
+<input id="TestY" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<label for="TestZ" id="TextZLabel">Z</label>
+<input id="TestZ" type="number" value="0.0" step=0.01 oninput='onChange();' onchange='onChange();'/>
 
 <p>
 <b>HDR</b>
