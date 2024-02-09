@@ -1,9 +1,16 @@
 <html>
 <body>
 
-<p>
-Right after this is a 1x1 PQ image, that, because of bugs, causes CSS colors to be un-clamped from the SDR range ... this needs to be fixed, but until it is fixed, it allows visualizing colors that go out of the SDR gamut.
-<img width=1px src="gradient-pq.avif">
+<p style="background-color:rgb(100% 78.52% 86.15%);">
+This is oklch(90% 90% 0deg) gamut mapped to sRGB to rgb(100% 78.52% 86.15%).
+</p>
+
+<p style="background-color:color(display-p3 1 0.7753 0.8575);">
+This is oklch(90% 90% 0deg) gamut mapped to P3 to color(display-p3 1 0.7753 0.8575).
+</p>
+
+<p style="background-color:color(rec2020 1 0.7282 0.8325);">
+This is oklch(90% 90% 0deg) gamut mapped to Rec2020 color(rec2020 1 0.7282 0.8325).
 </p>
 
 <p style="background-color:oklch(90% 90% 0deg);">
@@ -12,29 +19,82 @@ Some HDR displays (e.g, the higher end Macbook Pros) can produce this color.
 It is what I would call a "brilliant magenta".
 </p>
 
-<p 
-
-
-<p style="background-color:rgb(100% 78.52% 86.15%);">
-This is the color rgb(100% 78.52% 86.15%), which is the above color gamut mapped to the border of the sRGB gamut.
-</p>
-
-<p style="background-color:color(display-p3 1 0.7753 0.8575);">
-This is the color color(display-p3 1 0.7753 0.8575), which is the above color gamut mapped to the border of the P3 gamut.
-</p>
-
-<p style="background-color:color(rec2020 1 0.7282 0.8325);">
-This is the color color(rec2020 1 0.7282 0.8325), which is the above color gamut mapped to the border of the Rec2020 gamut.
+<p style="background-color:color(rec2020 1.0 0.4343 0.7975);">
+This is oklch(90% 90% 0deg) clamped to Rec2020 to color(rec2020 1.0 0.4343 0.7975).
 </p>
 
 <p style="background-color:color(display-p3 1.0 0.346 0.825);">
-This is the color(display-p3 1.0 0.346 0.825). This is the result of component-wise clamping in P3 space.
+This is oklch(90% 90% 0deg) clamped to P3 to color(display-p3 1.0 0.346 0.825).
+</p>
+
+<p>
+<div style="width:50px; display:inline-block;">A</div>
+<div style="background-color:color(rec2020 0.8543 0.8543 0.8543); width:40px; display:inline-block;">  0%</div>
+<div style="background-color:color(rec2020 0.9087 0.8216 0.8482); width:40px; display:inline-block;"> 10%</div>
+<div style="background-color:color(rec2020 0.9612 0.7867 0.8420); width:40px; display:inline-block;"> 20%</div>
+<div style="background-color:color(rec2020 1.0000 0.7494 0.8359); width:40px; display:inline-block;"> 30%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:40px; display:inline-block;"> 40%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:40px; display:inline-block;"> 50%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:40px; display:inline-block;"> 60%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:40px; display:inline-block;"> 70%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:40px; display:inline-block;"> 80%</div>
+<div style="background-color:color(rec2020 1.0000 0.7282 0.8325); width:40px; display:inline-block;"> 90%</div>
+<div style="background-color:color(rec2020 1.0000 0.7281 0.8325); width:50px; display:inline-block;">100%</div>
+</p>
+
+<p>
+<div style="width:50px; display:inline-block;">B</div>
+<div style="background-color:oklch(90%   0% 0deg); width:40px; display:inline-block;">  0%</div>
+<div style="background-color:oklch(90%  10% 0deg); width:40px; display:inline-block;"> 10%</div>
+<div style="background-color:oklch(90%  20% 0deg); width:40px; display:inline-block;"> 20%</div>
+<div style="background-color:oklch(90%  30% 0deg); width:40px; display:inline-block;"> 30%</div>
+<div style="background-color:oklch(90%  40% 0deg); width:40px; display:inline-block;"> 40%</div>
+<div style="background-color:oklch(90%  50% 0deg); width:40px; display:inline-block;"> 50%</div>
+<div style="background-color:oklch(90%  60% 0deg); width:40px; display:inline-block;"> 60%</div>
+<div style="background-color:oklch(90%  70% 0deg); width:40px; display:inline-block;"> 70%</div>
+<div style="background-color:oklch(90%  80% 0deg); width:40px; display:inline-block;"> 80%</div>
+<div style="background-color:oklch(90%  90% 0deg); width:40px; display:inline-block;"> 90%</div>
+<div style="background-color:oklch(90% 100% 0deg); width:50px; display:inline-block;">100%</div>
+</p>
+
+<p>
+<div style="width:50px; display:inline-block;">C</div>
+<div style="background-color:color(display-p3 0.87 0.87 0.87); width:40px; display:inline-block;">  0%</div>
+<div style="background-color:color(display-p3 0.95 0.84 0.87); width:40px; display:inline-block;"> 10%</div>
+<div style="background-color:color(display-p3 1.00 0.80 0.86); width:40px; display:inline-block;"> 20%</div>
+<div style="background-color:color(display-p3 1.00 0.76 0.85); width:40px; display:inline-block;"> 30%</div>
+<div style="background-color:color(display-p3 1.00 0.73 0.84); width:40px; display:inline-block;"> 40%</div>
+<div style="background-color:color(display-p3 1.00 0.69 0.82); width:40px; display:inline-block;"> 50%</div>
+<div style="background-color:color(display-p3 1.00 0.66 0.80); width:40px; display:inline-block;"> 60%</div>
+<div style="background-color:color(display-p3 1.00 0.62 0.78); width:40px; display:inline-block;"> 70%</div>
+<div style="background-color:color(display-p3 1.00 0.58 0.76); width:40px; display:inline-block;"> 80%</div>
+<div style="background-color:color(display-p3 1.00 0.53 0.74); width:40px; display:inline-block;"> 90%</div>
+<div style="background-color:color(display-p3 1.00 0.48 0.72); width:50px; display:inline-block;">100%</div>
+</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<p>
+Right after this is a 1x1 PQ image, that, because of bugs, causes CSS colors to be un-clamped from the SDR range ... this needs to be fixed, but until it is fixed, it allows visualizing colors that go out of the SDR gamut.
+<img width=1px src="gradient-pq.avif">
 </p>
 
 
 <!--
-
-
 $export $pure half3 $css_gamut_map_oklab(half3 oklab) {
     // Constants for the normal vector of the plane formed by white, black, and
     // the specified vertex of the gamut.
