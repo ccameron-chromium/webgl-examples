@@ -495,7 +495,9 @@ const gamut_common = `
   const int kRec2020YUV = 7;
   const int kSRGB = 1;
   const int kSRGBLinear = 2;
+  const int kP3 = 9;
   const int kP3Linear = 6;
+  const int kRec2020 = 10;
   const int kRec2020Linear = 3;
   const int kOkLab = 4;
   const int kWavelength = 5;
@@ -506,6 +508,7 @@ const gamut_common = `
   uniform float input_hdr_headroom;
   uniform highp int output_position_type;
   uniform float tonemap_hdr_headroom;
+  uniform highp int sphere_position_type;
 
   mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
                             0.291965,  0.692236,   0.0418818,
@@ -642,7 +645,7 @@ const gamut_common = `
     }
 
     // Convert nonlinear to linear.
-    if (from == kSRGB || from == kRec2020YUV) {
+    if (from == kSRGB || from == kP3 || from == kRec2020 || from == kRec2020YUV) {
       c  = srgbToLinear(c);
     }
 
@@ -650,10 +653,10 @@ const gamut_common = `
     if (from == kSRGB || from == kSRGBLinear) {
       c = srgb_to_xyzd50 * c;
     }
-    else if (from == kP3Linear) {
+    else if (from == kP3 || from == kP3Linear) {
       c = p3_to_xyzd50 * c;
     }
-    else if (from == kRec2020Linear || from == kRec2020YUV) {
+    else if (from == kRec2020 || from == kRec2020Linear || from == kRec2020YUV) {
       c = rec2020_to_xyzd50 * c;
     }
 
@@ -689,17 +692,15 @@ const gamut_common = `
     {
       if (to == kSRGB || to == kSRGBLinear) {
         c = xyzd50_to_srgb * c;
-      }
-      else if (to == kP3Linear) {
+      } else if (to == kP3 || to == kP3Linear) {
         c = xyzd50_to_p3 * c;
-      }
-      else if (to == kRec2020Linear || to == kRec2020YUV) {
+      } else if (to == kRec2020 || to == kRec2020Linear || to == kRec2020YUV) {
         c = xyzd50_to_rec2020 * c;
       }
     }
 
     // Convert linear to nonlinear.
-    if (to == kSRGB || to == kRec2020YUV) {
+    if (to == kSRGB || to == kP3 || to == kRec2020 || to == kRec2020YUV) {
       c  = linearToSrgb(c);
     }
 
@@ -940,11 +941,37 @@ const kXYZ = 0;
 const kRec2020YUV = 7;
 const kSRGB = 1;
 const kSRGBLinear = 2;
+const kP3 = 9;
 const kP3Linear = 6;
+const kRec2020 = 10;
 const kRec2020Linear = 3;
 const kOkLab = 4;
 const kWavelength = 5;
 const kSphere = 8;
+
+let getGamutNumber = function(gamut) {
+  switch (gamut) {
+    case 'srgb':
+      return kSRGB;
+    case 'srgb-linear':
+      return kSRGBLinear;
+    case 'p3':
+      return kP3;
+    case 'p3-linear':
+      return kP3Linear;
+    case 'rec2020':
+      return kRec2020;
+    case 'rec2020-linear':
+      return kRec2020Linear;
+    case 'rec2020-yuv':
+      return kRec2020YUV;
+    case 'oklab':
+      return kOkLab;
+    case 'xyz':
+      return kXYZ;
+  }
+  throw('bad gamut');
+}
 
 const gamut_vs = `#version 300 es
     precision highp float;
@@ -961,16 +988,15 @@ const gamut_vs = `#version 300 es
       if (input_position_type == kSphere) {
         float phi   = 2.0*3.141593*position.y;
         float theta = 2.0*3.141593*position.x;
-        vec3 position_surface = (matrixSubModel * vec4(
+
+        v_xyzd50 = convert((matrixSubModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz, sphere_position_type, 1.0, kXYZ, 1.0);
+
+        vec3 position_center = convert(v_xyzd50, kXYZ, 1.0, output_position_type, 1.0);
+        v_normal = vec3(
            cos(phi),
            sin(theta) * sin(phi),
-           cos(theta) * sin(phi),
-           1.0)).xyz;
-        vec3 position_center = (matrixSubModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-
-        v_xyzd50 = convert(position_center, output_position_type, input_hdr_headroom, kXYZ, 1.0);
-        v_position = position_surface;
-        v_normal = normalize(position_surface - position_center);
+           cos(theta) * sin(phi));
+        v_position = position_center + 0.025 * v_normal;
       } else {
         vec3 in_color = (matrixSubModel * position).xyz;
         v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
@@ -1002,7 +1028,12 @@ const gamut_fs = `#version 300 es
     layout(location = 1) out vec4 f_out_normal;
     ` + gamut_common + `
     void main() {
-      vec3 srgb_color = convert(v_xyzd50, kXYZ, kSRGB);
+      vec3 xyzd50_color = v_xyzd50;
+      if (input_position_type != kSphere) {
+        xyzd50_color = convert(v_position, output_position_type, kXYZ);
+      }
+    
+      vec3 srgb_color = convert(xyzd50_color, kXYZ, kSRGB);
       vec3 srgb_color_clamped = clamp(srgb_color, 0.0, 1.0);
 
       // Discard based on slicing.
@@ -1011,7 +1042,7 @@ const gamut_fs = `#version 300 es
       }
       // Discard out-of-gamut.
       if (gamut_map_discard == 1) {
-        if (!inGamut(v_xyzd50, kXYZ, gamut_map_space, gamut_map_headroom)) {
+        if (!inGamut(xyzd50_color, kXYZ, gamut_map_space, gamut_map_headroom)) {
           discard;
         }
       }
@@ -1020,16 +1051,16 @@ const gamut_fs = `#version 300 es
       if (gamut_map_type != 0) {
         // CSS
         if (gamut_map_type == 1) {
-          vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
+          vec3 c = convert(xyzd50_color, kXYZ, kRec2020Linear);
           c = clamp(c, 0.0, 1.0);
           srgb_color = convert(c, kRec2020Linear, kSRGB);
         }
         if (gamut_map_type == 5) {
-          srgb_color = gamutMapOkLabOptimized(v_xyzd50, kXYZ);
+          srgb_color = gamutMapOkLabOptimized(xyzd50_color, kXYZ);
         }
         if (gamut_map_type == 2) {
-          if (!inGamut(v_xyzd50, kXYZ, gamut_map_space)) {
-            vec3 Lab = convert(v_xyzd50, kXYZ, kOkLab);
+          if (!inGamut(xyzd50_color, kXYZ, gamut_map_space)) {
+            vec3 Lab = convert(xyzd50_color, kXYZ, kOkLab);
             vec3 Loo = vec3(min(Lab.x, 1.0), 0.5, 0.5);
             float alpha0 = 0.0;
             float alpha1 = 1.0;
@@ -1049,7 +1080,7 @@ const gamut_fs = `#version 300 es
         }
         // L2
         if (gamut_map_type == 3) {
-          vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
+          vec3 c = convert(xyzd50_color, kXYZ, kRec2020Linear);
           float M = max(max(c.r, c.g), c.b);
           if (M > 1.0) {
             vec3 u = vec3(1.0, 1.0, 1.0);
@@ -1063,7 +1094,7 @@ const gamut_fs = `#version 300 es
         }
         // Y
         if (gamut_map_type == 4) {
-          vec3 c = convert(v_xyzd50, kXYZ, kRec2020Linear);
+          vec3 c = convert(xyzd50_color, kXYZ, kRec2020Linear);
           c = gamutMapScaleUV(c);
           srgb_color = convert(c, kRec2020Linear, kSRGB);
         }
@@ -1623,32 +1654,16 @@ let drawToFbo = function(width, height) {
     Axis0.innerText = 'L=1'; Axis1.innerText = 'a=0.5'; Axis2.innerText = 'b=0.5';
   }
 
-  let testPoint = [Number(TestX.value), Number(TestY.value), Number(TestZ.value)];
-
   if (RadioGeo_OkLab.checked) {
     out_space = kOkLab;
-
-    testPoint[1] += 0.5;
-    testPoint[2] += 0.5;
-    TextXLabel.innerText = 'L';
-    TextYLabel.innerText = 'a';
-    TextZLabel.innerText = 'b';
   }
   if (RadioGeo_XYZ.checked) {
     Axis0.innerText = 'X'; Axis1.innerText = 'Y'; Axis2.innerText = 'Z';
     out_space = kXYZ;
-
-    TextXLabel.innerText = 'X';
-    TextYLabel.innerText = 'Y';
-    TextZLabel.innerText = 'Z';
   }
   if (RadioGeo_Rec2020YUV.checked) {
     Axis0.innerText = 'Y'; Axis1.innerText = 'U'; Axis2.innerText = 'V';
     out_space = kRec2020YUV;
-
-    TextXLabel.innerText = 'Y';
-    TextYLabel.innerText = 'U';
-    TextZLabel.innerText = 'V';
   }
 
   let gamut_space = kSRGB;
@@ -1781,29 +1796,39 @@ let drawToFbo = function(width, height) {
   }
 
   // Draw a sphere!
-  if (TestPoint.checked) {
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+  let drawSphere = function(pointGamut, pointX, pointY, pointZ) {
+  if (pointGamut.value != 'none') {
+    let testPoint = [Number(pointX.value), Number(pointY.value), Number(pointZ.value)];
+      if (pointGamut.value == 'oklab') {
+        testPoint[1] += 0.5;
+        testPoint[2] += 0.5;
+      }
+      gl.uniform1i(gl.getUniformLocation(gamut_program, 'sphere_position_type'), getGamutNumber(pointGamut.value));
+      gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
 
-    let matrices = []
-    matrices.push(matrixTranslation(testPoint[0], testPoint[1], testPoint[2]));
-    let radius = 0.025;
-    matrices.push(matrixScale(2*radius, 2*radius, 2*radius));
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixConcat(matrices));
+      let matrices = []
+      matrices.push(matrixTranslation(testPoint[0], testPoint[1], testPoint[2]));
+      let radius = 0.025;
+      matrices.push(matrixScale(2*radius, 2*radius, 2*radius));
+      gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixConcat(matrices));
 
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), kSphere);
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texture_xyzd50_lambda);
+      gl.uniform1i(gl.getUniformLocation(gamut_program, 'input_position_type'), kSphere);
+      gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture_xyzd50_lambda);
 
-    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
-    gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'), no_slice_vector);
+      gl.uniform4fv(gl.getUniformLocation(gamut_program, 'color'), [1, 1, 1, 1]);
 
-    // drawGrid(gamut_program, kGrid32x32);
-    drawPlane(gamut_program);
+      // drawGrid(gamut_program, kGrid32x32);
+      drawPlane(gamut_program);
 
-    gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
-    gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
-  }
+      gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
+      gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
+    }
+  };
+  drawSphere(TestPoint0Gamut, TestPoint0X, TestPoint0Y, TestPoint0Z);
+  drawSphere(TestPoint1Gamut, TestPoint1X, TestPoint1Y, TestPoint1Z);
 
   gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
@@ -2191,15 +2216,35 @@ Geometric coordinate color space<br>
 </div>
 </p>
 
-Test point:<br>
-<label for="TestX" id="TextXLabel">X</label>
-<input id="TestX" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<label for="TestY" id="TextYLabel">Y</label>
-<input id="TestY" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<label for="TestZ" id="TextZLabel">Z</label>
-<input id="TestZ" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<label for="TestPoint">Draw</label>
-<input id="TestPoint" type="checkbox" onchange='onChange();'/>
+Test point 0:
+<select name="Test0Gamut" id="TestPoint0Gamut" onchange='onChange();'>
+  <option selected value="none">None</option>
+  <option value="srgb">sRGB</option>
+  <option value="p3">Display P3</option>
+  <option value="rec2020">Display Rec2020</option>
+  <option value="rec2020-yuv">Rec2020 YUV</option>
+  <option value="oklab">OkLab</option>
+  <option value="xyzd50">XYZ D50</option>
+</select>
+<input id="TestPoint0X" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint0Y" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint0Z" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<br>
+
+Test point 1:
+<select name="Test1Gamut" id="TestPoint1Gamut" onchange='onChange();'>
+  <option selected value="none">None</option>
+  <option value="srgb">sRGB</option>
+  <option value="p3">Display P3</option>
+  <option value="rec2020">Display Rec2020</option>
+  <option value="rec2020-yuv">Rec2020 YUV</option>
+  <option value="oklab">OkLab</option>
+  <option value="xyzd51">XYZ D51</option>
+</select>
+<input id="TestPoint1X" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint1Y" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint1Z" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+
 
 <p>
 <b>HDR</b>
@@ -2245,7 +2290,7 @@ Slice:
 
 <div>
 Slicing plane: 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto">
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Auto" checked>
 <label for="RadioPlane_Auto">Auto</label>
 
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_SDR">
@@ -2254,7 +2299,7 @@ Slicing plane:
 <input type="radio" name="plane" onchange='onChange();' id="RadioPlane_HDR">
 <label for="RadioPlane_HDR">HDR</label>
 
-<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane" checked>
+<input type="radio" name="plane" onchange='onChange();' id="RadioPlane_Plane">
 <label for="RadioPlane_Plane">Full</label>
 </div>
 </p>
