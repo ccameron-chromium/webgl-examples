@@ -1227,7 +1227,7 @@ function main() {
   <td style="text-align:center;">
     <p>Presets:</p>
         <button type="button" id="ButtonPresetHDR">HDR</button>
-        <button type="button" id="ButtonPresetChromium">Chromium SDR</button>
+        <button type="button" id="ButtonPresetChromium">Reinhard maxRGB</button>
     <br><br>
         <button type="button" id="ButtonPresetSave1">Save (1)</button>
         <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
@@ -1243,7 +1243,7 @@ function main() {
     <label for="ToneMap">Tone mapping:</label><br>
     <select name="ToneMap" id="ToneMap" onchange='onChange();'>
       <option value="None">Full HDR</option>
-      <option value="NativePQ">Native PQ tone mapping (to display)</option>
+      <option value="NativePQ">Native HDR10 tone mapping (to display)</option>
       <option value="NativeHLG">Native HLG tone mapping (to display)</option>
       <option value="Clamp">Clamp to NDWL</option>
       <option value="Reinhard">Reinhard (map CLLI max to NDWL)</option>
