@@ -1,0 +1,34 @@
+<html>
+
+<head>
+<script>
+window.onload = function() {
+  let context = MyCanvas.getContext('2d', {colorSpace:'display-p3'});
+
+  let image = new Image;
+  image.onload = function() {
+    context.drawImage(image, 0, 0, 544, 128);
+    for (let x = 0; x < 17; ++x) {
+      let value = context.getImageData(16 + 32 * x, 16, 1, 1).data[0] / 255
+      Output.innerText += ' ' + value.toFixed(2) + ', ';
+    }
+  }
+  image.src = "staircase-hlg.avif";
+}
+</script>
+</head>
+
+<body>
+
+<p>
+<canvas id="MyCanvas" width="544" height="128"/>
+</p>
+<p>
+Pixel values read back from canvas:
+</p>
+<p id="Output">
+HLG: 
+</p>
+
+</body>
+<html>
