@@ -1,0 +1,34 @@
+{
+  "base_url":"gainmap-data/iceberg-hdr.avif",
+  "gainmap_url":"gainmap-data/iceberg-gainmap.jpg",
+  "base_primaries":9,
+  "base_transfer":16,
+  "alternate_primaries":12,
+  "alternate_transfer":13,
+  "use_base_colour_space":false,
+  "base_hdr_headroom":4,
+  "alternate_hdr_headroom":0,
+  "channels":[
+    {
+      "gain_map_min":-0.950041,
+      "gain_map_max":3.964162,
+      "gamma":0.624768,
+      "base_offset":0.026874,
+      "alternate_offset":0.026874
+    },
+    {
+      "gain_map_min":-1.077233,
+      "gain_map_max":3.750324,
+      "gamma":0.728324,
+      "base_offset":0.026874,
+      "alternate_offset":0.026874
+    },
+    {
+      "gain_map_min":-1.214492,
+      "gain_map_max":3.264931,
+      "gamma":0.872794,
+      "base_offset":0.026874,
+      "alternate_offset":0.026874
+    }
+  ]
+}

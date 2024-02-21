@@ -1,0 +1,1048 @@
+<html>
+<head>
+<script>
+var canvas;
+var gl;
+var program;
+
+var base_texture = null;
+var alternate_texture = null;
+var gain_map_texture = null;
+var adapted_texture = null;
+
+var base_size = [0,0];
+var alternate_size = [0,0];
+var gain_map_size = [0,0];
+
+var display_hdr_headroom;
+var hdr_headroom = 0;
+var viewport_w;
+var viewport_h;
+var save_requested = false;
+
+// Supported CICP values.
+const kPrimariesSRGB = 1;
+const kPrimariesP3 = 12;
+const kPrimariesRec2020 = 9;
+const kTransferSRGB = 13;
+const kTransferGamma22 = 4;
+const kTransferPQ = 16;
+const kTransferHLG = 18;
+
+const kModeAdaptive = 0;
+const kModeBase = 1;
+const kModeAlternate = 2;
+const kModeGainmap = 3;
+const kModeComputeAlternate = 4;
+const kModeComputeGainmap = 5;
+
+var gainmaps = [
+  "gainmap-data/iceberg-sdr-base.json",
+  "gainmap-data/iceberg-hdr-base.json",
+];
+
+let get_channel_param = function(name) {
+  let e0 = document.getElementById('GainMapMetadata_Channel0_' + name);
+  let e1 = document.getElementById('GainMapMetadata_Channel1_' + name);
+  let e2 = document.getElementById('GainMapMetadata_Channel2_' + name);
+  if (GainMapMetadata_MultiChannel.checked) {
+    if (e0 != null && e1 != null && e2 != null) {
+      return [Number(e0.value), Number(e1.value), Number(e2.value)];
+    }
+  } else {
+    if (e0 != null) {
+      return [Number(e0.value), Number(e0.value), Number(e0.value)];
+    }
+  }
+  console.log(name);
+  throw new Error('Channels must have length 1 or 3');
+}
+
+let pow2 = function(x) {
+  return Math.pow(x, 2);
+}
+let log2 = function(x) {
+  return Math.log(x) / Math.log(2);
+}
+let clamp = function(x, a, b) {
+  return Math.min(Math.max(x, a), b);
+}
+let sign = function(x, a, b) {
+  return Math.sign(x);
+}
+
+let linearToSrgb = function (x) {
+  let a = 1.1371188301409823;
+  let c = 12.919999999992248;
+  let d = 0.003130800090713953;
+  let e = -0.05499994754780801;
+  let g = 0.4166666666666667;
+  if (x < d)
+    return c*x;
+  return Math.pow(a*x, g) + e;
+}
+
+
+const vs = `uniform int flip_y;
+            attribute vec2 position;
+            varying vec2 texcoord;
+            void main() {
+              if (flip_y == 1) {
+                texcoord = vec2(0.5+0.5*position.x, 0.5-0.5*position.y);
+              } else {
+                texcoord = vec2(0.5+0.5*position.x, 0.5+0.5*position.y);
+              }
+              gl_Position = vec4(position, 0.0, 1.0);
+            }`;
+const fs = `
+  precision mediump float;
+  uniform sampler2D base_texture;
+  uniform sampler2D alternate_texture;
+  uniform sampler2D gain_map_texture;
+
+  uniform vec3 gain_map_min;
+  uniform vec3 gain_map_max;
+  uniform vec3 gamma;
+  uniform vec3 base_offset;
+  uniform vec3 alternate_offset;
+
+  uniform float base_hdr_headroom;
+  uniform int base_primaries;
+  uniform int base_transfer;
+
+  uniform float alternate_hdr_headroom;
+  uniform int alternate_primaries;
+  uniform int alternate_transfer;
+
+  uniform int working_primaries;
+
+  uniform float weight;
+  uniform float background_gain;
+  uniform int mode;
+  varying vec2 texcoord;
+
+  int kPrimariesSRGB = 1;
+  int kPrimariesP3 = 12;
+  int kPrimariesRec2020 = 9;
+
+  int kTransferSRGB = 13;
+  int kTransferGamma22 = 4;
+  int kTransferPQ = 16;
+  int kTransferHLG = 18;
+
+  int kModeAdaptive = 0;
+  int kModeBase = 1;
+  int kModeAlternate = 2;
+  int kModeGainmap = 3;
+  int kModeComputeAlternate = 4;
+  int kModeComputeGainmap = 5;
+
+
+  float srgbToLinear(float x) {
+    if (x < 0.0)
+      return 0.0;
+    if (x < 0.04045)
+      return x / 12.92;
+    return pow((x + 0.055)/1.044, 2.4);
+  }
+  float linearToSrgb(float x) {
+    if (x < 0.003130800090713953)
+      return 12.919999999992248*x;
+    return pow(1.1371188301409823*x, 0.4166666666666667) - 0.05499994754780801;
+  }
+  vec3 srgbToLinear(vec3 c) {
+    return vec3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
+  }
+  vec3 linearToSrgb(vec3 c) {
+    return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
+  }
+  float pqSignalToNits(float v) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float p = pow(clamp(v, 0.0, 1.0), 1.0 / m2);
+    return 10000.0 * pow(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+  }
+  float pqNitsToSignal(float L) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float v = pow(clamp(L / 10000.0, 0.0, 1.0), m1);
+    return pow((c1 + c2 * v) / (1.0 + c3 * v), m2);
+  }
+  float hlgOetfInv(float x) {
+    const float a = 0.17883277;
+    const float b = 1.0 - 4.0*a;
+    const float c = 0.5 - a * log(4.0 * a);
+    if (x <= 0.5) {
+      return pow(x, 2.0) / 3.0;
+    } else {
+      return (exp((x - c) / a) + b) / 12.0;
+    }
+  }
+  float hlgOetf(float x) {
+    const float a = 0.17883277;
+    const float b = 1.0 - 4.0*a;
+    const float c = 0.5 - a * log(4.0 * a);
+    float E = 12.0 * x;
+    if (E < 1.0) {
+      return 0.5 * sqrt(E);
+    }
+    return a * log(E - b) + c;
+  }
+  vec3 hlgSignalToNits(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    c = vec3(hlgOetfInv(c.r), hlgOetfInv(c.g), hlgOetfInv(c.b));
+
+    vec3 L = vec3(0.262700, 0.678000, 0.059300);
+    float Y = dot(L, c);
+    c *= pow(Y, 0.2);
+    c *= 1000.0;
+    return c;
+  }
+  vec3 hlgNitsToSignal(vec3 c) {
+    c /= 1000.0;
+    if (c.r > 1.0 || c.g > 1.0 || c.b > 1.0) {
+      return vec3(1.0);
+    }
+    c = clamp(c, 0.0, 1.0);
+    vec3 L = vec3(0.262700, 0.678000, 0.059300);
+    float Y = dot(L, c);
+    c *= pow(Y, -0.2 / 1.2);
+
+    c = vec3(hlgOetf(c.r), hlgOetf(c.g), hlgOetf(c.b));
+    return c;
+  }
+
+  vec3 toLinear(vec3 c, int transfer) {
+    if (transfer == kTransferSRGB) {
+      return srgbToLinear(c);
+    }
+    if (transfer == kTransferGamma22) {
+      return pow(c, vec3(2.2));
+    }
+    if (transfer == kTransferPQ) {
+      c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
+      c /= 203.0;
+      return c;
+    }
+    if (transfer == kTransferHLG) {
+      c = hlgSignalToNits(c) / 203.0;
+      return c;
+    }
+    return vec3(0.0, 0.0, 0.0);
+  }
+
+  vec3 fromLinear(vec3 c, int transfer) {
+    if (transfer == kTransferSRGB) {
+      return linearToSrgb(c);
+    }
+    if (transfer == kTransferGamma22) {
+      return pow(c, vec3(1.0/2.2));
+    }
+    if (transfer == kTransferPQ) {
+      c *= 203.0;
+      c = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
+      return c;
+    }
+    if (transfer == kTransferHLG) {
+      c = hlgNitsToSignal(c * 203.0);
+      return c;
+    }
+    return vec3(0.0, 0.0, 0.0);
+  }
+
+  vec3 convertPrimaries(vec3 c, int from, int to) {
+    if (from == to) {
+      return c;
+    }
+    if (from == kPrimariesSRGB) {
+      mat3 srgb_to_xyzd50 = mat3( 0.43606567, 0.2224884,  0.01391602,
+                                  0.38514709, 0.71687317, 0.09707642,
+                                  0.14306641, 0.06060791, 0.71409607);
+      c = srgb_to_xyzd50 * c;
+    } else if (from == kPrimariesP3) {
+      mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
+                                0.291965,  0.692236,   0.0418818,
+                                0.157153,  0.0665819,  0.784378);
+      c = p3_to_xyzd50 * c;
+    } else if (from == kPrimariesRec2020) {
+      mat3 rec2020_to_xyzd50 = mat3( 0.673459,  0.279033,   -0.00193139,
+                                     0.165661,  0.675338,    0.0299794,
+                                     0.1251,    0.0456288,   0.797162);
+      c = rec2020_to_xyzd50 * c;
+    } else {
+      return vec3(0.0, 0.0, 0.0);
+    }
+
+    if (to == kPrimariesSRGB) {
+      mat3 xyzd50_to_srgb = mat3( 3.13411215, -0.97878729,  0.07198304,
+                                 -1.61739246,  1.91627959, -0.22898585,
+                                 -0.4906334,   0.03345471,  1.40538513);
+      c = xyzd50_to_srgb * c;
+    } else if (to == kPrimariesP3) {
+      mat3 xyzd50_to_p3 = mat3( 2.40404516, -0.84222838,  0.04818706,
+                               -0.98989869,  1.79885051, -0.09737385,
+                               -0.39763172,  0.01604817,  1.27350664);
+      c = xyzd50_to_p3 * c;
+    } else if (to == kPrimariesRec2020) {
+      mat3 xyzd50_to_rec2020 = mat3( 1.6472752,  -0.68261762,  0.02966273,
+                                    -0.39360248,  1.64761778, -0.06291669,
+                                    -0.23598029,  0.01281627,  1.25339643);
+      c = xyzd50_to_rec2020 * c;
+    } else {
+      return vec3(0.0, 0.0, 0.0);
+    }
+
+    return c;
+  }
+
+  float pqNormalizedSignal(float L, float Lw, float Lb) {
+    return (pqNitsToSignal(L)  - pqNitsToSignal(Lb)) /
+           (pqNitsToSignal(Lw) - pqNitsToSignal(Lb));
+  }
+
+  // Return the gainmap in the working linear space.
+  vec3 applyGainmap(float w) {
+    vec3 base = texture2D(base_texture, texcoord).rgb;
+
+    base = toLinear(base, base_transfer);
+    base = convertPrimaries(base, base_primaries, working_primaries);
+
+    vec3 g = texture2D(gain_map_texture, texcoord).rgb;
+    g = pow(g, vec3(1.0)/gamma);
+    g = gain_map_min + (gain_map_max - gain_map_min) * g;
+    return (base + base_offset) * exp2(w * g) - alternate_offset;
+  }
+
+  vec3 computeGainmap() {
+    vec3 base = texture2D(base_texture, texcoord).rgb;
+    base = toLinear(base, base_transfer);
+    base = convertPrimaries(base, base_primaries, working_primaries);
+
+    vec3 alternate = texture2D(alternate_texture, texcoord).rgb;
+    alternate = toLinear(alternate, alternate_transfer);
+    alternate = convertPrimaries(alternate, alternate_primaries, working_primaries);
+
+    vec3 g;
+    if (alternate_hdr_headroom < base_hdr_headroom) {
+      g = (base + base_offset) / (alternate + alternate_offset);
+    } else {
+      g = (alternate + alternate_offset) / (base + base_offset);
+    }
+    g = max(g, 0.0);
+    g = log2(g);
+    g = (g - gain_map_min) / (gain_map_max - gain_map_min);
+    g = clamp(g, 0.0, 1.0);
+    g = pow(g, gamma);
+    return g;
+  }
+
+  void main() {
+    gl_FragColor.a = 1.0;
+
+    vec3 c;
+    if (mode == kModeBase) {
+      c = texture2D(base_texture, texcoord).rgb;
+      c = toLinear(c, base_transfer);
+      c = convertPrimaries(c, base_primaries, kPrimariesSRGB);
+    } else if (mode == kModeAdaptive) {
+      c = applyGainmap(weight);
+      c = convertPrimaries(c, working_primaries, kPrimariesSRGB);
+    } else if (mode == kModeAlternate) {
+      c = texture2D(alternate_texture, texcoord).rgb;
+      c = toLinear(c, alternate_transfer);
+      c = convertPrimaries(c, alternate_primaries, kPrimariesSRGB);
+    } else if (mode == kModeGainmap) {
+      c = texture2D(gain_map_texture, texcoord).rgb;
+    } else if (mode == kModeComputeAlternate) {
+      c = applyGainmap(sign(alternate_hdr_headroom - base_hdr_headroom));
+      c = convertPrimaries(c, working_primaries, alternate_primaries);
+      c = fromLinear(c, alternate_transfer);
+      gl_FragColor.rgb = c;
+      return;
+    } else if (mode == kModeComputeGainmap) {
+      c = computeGainmap();
+      gl_FragColor.rgb = c;
+      return;
+    } 
+    gl_FragColor.rgb = linearToSrgb(background_gain * c);
+  }`;
+
+let compileShader = function(gl, vertex_source, fragment_source) {
+  let vertex_shader = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vertex_shader, vertex_source);
+  gl.compileShader(vertex_shader);
+  if (!gl.getShaderParameter(vertex_shader, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(vertex_shader));
+     
+  let fragment_shader = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fragment_shader, fragment_source); 
+  gl.compileShader(fragment_shader);
+  if (!gl.getShaderParameter(fragment_shader, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(fragment_shader));
+  
+  let program = gl.createProgram();
+  gl.attachShader(program, vertex_shader);
+  gl.attachShader(program, fragment_shader);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS))
+    throw new Error(gl.getProgramInfoLog(program));
+
+  return program;
+}
+
+let createTexture = function(size, data) {
+  let texture = gl.createTexture();
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.FALSE);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, size[0], size[1], 0, gl.RGBA, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return texture;
+}
+
+let setUniforms = function() {
+  gl.useProgram(program);
+
+  {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, base_texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'base_texture'), 0);
+  }
+  {
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, gain_map_texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'gain_map_texture'), 1);
+  }
+  {
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, alternate_texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'alternate_texture'), 2);
+  }
+
+  gl.uniform3fv(gl.getUniformLocation(program, 'gain_map_min'),     get_channel_param('GainMapMin'));
+  gl.uniform3fv(gl.getUniformLocation(program, 'gain_map_max'),     get_channel_param('GainMapMax'));
+  gl.uniform3fv(gl.getUniformLocation(program, 'gamma'),            get_channel_param('Gamma'));
+  gl.uniform3fv(gl.getUniformLocation(program, 'base_offset'),      get_channel_param('BaseOffset'));
+  gl.uniform3fv(gl.getUniformLocation(program, 'alternate_offset'), get_channel_param('AlternateOffset'));
+
+  gl.uniform1f(gl.getUniformLocation(program, 'base_hdr_headroom'),
+      Number(GainMapMetadata_BaseHdrHeadroom.value));
+  gl.uniform1i(gl.getUniformLocation(program, 'base_primaries'),
+      Number(GainMapMetadata_BasePrimaries.value));
+  gl.uniform1i(gl.getUniformLocation(program, 'base_transfer'),
+      Number(GainMapMetadata_BaseTransfer.value));
+  gl.uniform1f(gl.getUniformLocation(program, 'alternate_hdr_headroom'),
+      Number(GainMapMetadata_AlternateHdrHeadroom.value));
+  gl.uniform1i(gl.getUniformLocation(program, 'alternate_primaries'),
+      Number(GainMapMetadata_AlternatePrimaries.value));
+  gl.uniform1i(gl.getUniformLocation(program, 'alternate_transfer'),
+      Number(GainMapMetadata_AlternateTransfer.value));
+
+  if (GainMapMetadata_UseBaseImageColorSpace.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'working_primaries'),
+        Number(GainMapMetadata_BasePrimaries.value));
+  } else {
+    gl.uniform1i(gl.getUniformLocation(program, 'working_primaries'),
+        Number(GainMapMetadata_AlternatePrimaries.value));
+  }
+
+  {
+    let alternate_hdr_headroom = Number(GainMapMetadata_AlternateHdrHeadroom.value);
+    let base_hdr_headroom = Number(GainMapMetadata_BaseHdrHeadroom.value);
+    const weight = 
+        sign(alternate_hdr_headroom - base_hdr_headroom) *
+        clamp((hdr_headroom - base_hdr_headroom)/
+              (alternate_hdr_headroom - base_hdr_headroom), 0, 1);
+    gl.uniform1f(gl.getUniformLocation(program, 'weight'), weight);
+  }
+
+  gl.uniform1f(gl.getUniformLocation(program, 'background_gain'), BackgroundGainSlider.value);
+}
+
+function drawQuad(flipY = false) {
+  let vertices = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+
+  let indices = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
+
+  let positionLocation = gl.getAttribLocation(program, 'position');
+  gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(positionLocation);
+
+  gl.uniform1i(gl.getUniformLocation(program, 'flip_y'), flipY ? 1 : 0);
+
+  gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+}
+
+function computeGainmap() {
+  if (!base_texture || !alternate_texture) {
+    throw('Need both base and alternate to compute gainmap!');
+  }
+
+  setUniforms();
+  gain_map_size[0] = Math.min(base_size[0], alternate_size[0]);
+  gain_map_size[1] = Math.min(base_size[1], alternate_size[1]);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  if (gain_map_texture) {
+    gl.deleteTexture(gain_map_texture);
+  }
+  gain_map_texture = createTexture(gain_map_size, null);
+
+  gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeComputeGainmap);
+
+  let fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, gain_map_texture, 0);
+  if (gl.FRAMEBUFFER_COMPLETE != gl.checkFramebufferStatus(gl.FRAMEBUFFER)) {
+    throw('Incomplete framebuffer');
+  }
+  drawQuad();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fbo);
+
+  draw();
+}
+
+function computeAlternate() {
+  setUniforms();
+  alternate_size[0] = base_size[0];
+  alternate_size[1] = base_size[1];
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  if (alternate_texture) {
+    gl.deleteTexture(alternate_texture);
+  }
+  alternate_texture = createTexture(alternate_size, null);
+
+  gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeComputeAlternate);
+
+  let fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, alternate_texture, 0);
+  if (gl.FRAMEBUFFER_COMPLETE != gl.checkFramebufferStatus(gl.FRAMEBUFFER)) {
+    throw('Incomplete framebuffer');
+  }
+  drawQuad();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fbo);
+
+  draw();
+}
+
+let draw = function() {
+  setUniforms();
+
+  if (RadioAdaptive.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeAdaptive);
+  }
+  if (RadioBase.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeBase);
+  }
+  if (RadioGain.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeGainmap);
+  }
+  if (RadioAlternate.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeAlternate);
+  }
+
+  drawQuad(flipY = true);
+
+  /*
+  if (save_requested) {
+    save_requested = false;
+    var mime_type = "image/jpeg";
+    var download_link = document.createElement('a');
+    download_link.download =
+        'canvas-' +
+        'bg-' + (255 * linearToSrgb(BackgroundGainSlider.value)).toFixed() + '-' + 
+        mode + '-' +
+        'hdr-' + (hdr_headroom *  1.0).toFixed(2) +
+        '.jpg';
+    download_link.href = canvas.toDataURL(mime_type);
+    download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
+ 
+    document.body.appendChild(download_link);
+    download_link.click();
+    document.body.removeChild(download_link);
+  }
+  */
+}
+
+let initializeGL = function() {
+  warningsText = '';
+
+  canvas = document.getElementById('Canvas');
+  gl = canvas.getContext('webgl2');
+  if (`configureHighDynamicRange` in canvas) {
+    canvas.configureHighDynamicRange({ mode:'extended' });
+  } else {
+    warningsText += 'Experimental HDR Canvas API not found (configureHighDyanmicRange)!<br>'
+  }
+  gl.getExtension('EXT_color_buffer_half_float');
+  if (`drawingBufferStorage` in gl) {
+    gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  } else {
+    warningsText += 'Experimental WebGL API not found (drawingBufferStorage)!<br>'
+  }
+  gl.drawingBufferColorSpace = 'srgb';
+
+  if (warningsText == '') {
+  } else {
+    warningsText += 'Use Reinhard Canary and Enable "Experimental Web Platform Features" in chrome://flags';
+
+    warnings = document.getElementById('Warnings');
+    warnings.hidden = false;
+    warnings.style = 'color:red;';
+    warnings.innerHTML = '<strong>' + warningsText + '</strong>';
+  }
+
+  program = compileShader(gl, vs, fs);
+
+  // Start black.
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
+let onImagesLoaded = function() {
+  canvas.width = viewport_w;
+  canvas.height = viewport_h;
+  canvas.style = 'max-width:100%; max-height:75vh;';
+  gl.viewport(0, 0, viewport_w, viewport_h);
+
+  draw();
+}
+
+let onGainmapJsonLoaded = function(gainmap_json) {
+  let image_sdr = new Image();
+  image_sdr.onload = function() {
+    base_size[0] = image_sdr.width;
+    base_size[1] = image_sdr.height;
+    base_texture = createTexture(base_size, image_sdr);
+
+    viewport_w = image_sdr.width;
+    viewport_h = image_sdr.height;
+
+    if (base_texture && gain_map_texture)
+      onImagesLoaded();
+  }
+  image_sdr.src = gainmap_json.base_url;
+
+  if (`gainmap_url` in gainmap_json) {
+    image_gainmap = new Image();
+    image_gainmap.onload = function() {
+      gain_map_size[0] = image_gainmap.width;
+      gain_map_size[1] = image_gainmap.height;
+      gain_map_texture = createTexture(gain_map_size, image_gainmap);
+      if (base_texture && gain_map_texture)
+        onImagesLoaded();
+    }
+    image_gainmap.src = gainmap_json.gainmap_url;
+  }
+  if (`alternate_url` in gainmap_json) {
+    image_alternate = new Image();
+    image_alternate.onload = function() {
+      alternate_size[0] = image_alternate.width;
+      alternate_size[1] = image_alternate.height;
+      alternate_texture = createTexture(alternate_size, image_alternate);
+      if (base_texture && alternate_texture)
+        onImagesLoaded();
+    }
+    image_alternate.src = gainmap_json.alternate_url;
+  }
+
+  GainMapMetadata_UseBaseImageColorSpace.checked = gainmap_json.use_base_colour_space;
+  GainMapMetadata_BaseHdrHeadroom.value = gainmap_json.base_hdr_headroom;
+  GainMapMetadata_AlternateHdrHeadroom.value = gainmap_json.alternate_hdr_headroom;
+  GainMapMetadata_MultiChannel.checked = gainmap_json.channels.length == 3;
+
+  GainMapMetadata_Channel0_GainMapMin.value      = gainmap_json.channels[0].gain_map_min;
+  GainMapMetadata_Channel0_GainMapMax.value      = gainmap_json.channels[0].gain_map_max;
+  GainMapMetadata_Channel0_Gamma.value           = gainmap_json.channels[0].gamma;
+  GainMapMetadata_Channel0_BaseOffset.value      = gainmap_json.channels[0].base_offset;
+  GainMapMetadata_Channel0_AlternateOffset.value = gainmap_json.channels[0].alternate_offset;
+
+  if (gainmap_json.channels.length == 3) {
+    GainMapMetadata_MultiChannel.checked = true;
+    GainMapMetadata_Channel1.hidden = false;
+    GainMapMetadata_Channel2.hidden = false;
+
+    GainMapMetadata_Channel1_GainMapMin.value      = gainmap_json.channels[1].gain_map_min;
+    GainMapMetadata_Channel1_GainMapMax.value      = gainmap_json.channels[1].gain_map_max;
+    GainMapMetadata_Channel1_Gamma.value           = gainmap_json.channels[1].gamma;
+    GainMapMetadata_Channel1_BaseOffset.value      = gainmap_json.channels[1].base_offset;
+    GainMapMetadata_Channel1_AlternateOffset.value = gainmap_json.channels[1].alternate_offset;
+
+    GainMapMetadata_Channel2_GainMapMin.value      = gainmap_json.channels[2].gain_map_min;
+    GainMapMetadata_Channel2_GainMapMax.value      = gainmap_json.channels[2].gain_map_max;
+    GainMapMetadata_Channel2_Gamma.value           = gainmap_json.channels[2].gamma;
+    GainMapMetadata_Channel2_BaseOffset.value      = gainmap_json.channels[2].base_offset;
+    GainMapMetadata_Channel2_AlternateOffset.value = gainmap_json.channels[2].alternate_offset;
+  } else {
+    GainMapMetadata_MultiChannel.checked = false;
+    GainMapMetadata_Channel1.hidden = true;
+    GainMapMetadata_Channel2.hidden = true;
+  }
+
+  GainMapMetadata_BasePrimaries.value = gainmap_json.base_primaries;
+  GainMapMetadata_BaseTransfer.value = gainmap_json.base_transfer;
+
+  GainMapMetadata_AlternatePrimaries.value = gainmap_json.alternate_primaries;
+  GainMapMetadata_AlternateTransfer.value = gainmap_json.alternate_transfer;
+}
+
+let loadGainmap = function(gainmap_json_url) {
+  base_texture = null;
+  gain_map_texture = null;
+  alternate_texture = null;
+
+  fetch(gainmap_json_url)
+  .then(res => res.json())
+  .then(out => onGainmapJsonLoaded(out))
+  .catch();
+}
+
+function onHdrToSdrSliderChanged() {
+  hdr_headroom = Number(HdrToSdrSlider.value);
+  HdrToSdrSliderLabel.innerText = 'Rendering HDR to SDR ratio: ' + hdr_headroom.toFixed(2);
+  draw();
+}
+
+function onBackgroundGainSliderChanged() {
+  let background_gain = BackgroundGainSlider.value;
+  let val = (255*linearToSrgb(background_gain)).toFixed();
+
+  BackgroundGainSliderLabel.innerHTML =
+      'Background: rgb(' + val + ')<br>' +
+      'Gain: 1/' + (1/background_gain).toFixed(2);
+
+  document.body.style.backgroundColor = 'rgb(' +  val + ',' + val + ',' + val + ')';
+  draw();
+}
+
+let onChange = function() {
+  draw();
+}
+
+function onHdrToSdrFromScreenChanged() {
+  if (UpdateHdrToSdrFromScreen.checked && display_hdr_headroom) {
+    HdrToSdrSlider.value = display_hdr_headroom;
+    onHdrToSdrSliderChanged();
+  }
+}
+
+function main() {
+  initializeGL();
+
+  // Build the gallery.
+  for (i in gainmaps) {
+    let gainmap_json_url = gainmaps[i];
+
+    let element = new Image();
+    element.style = 'max-width:150px; max-height:150px; padding:10px;';
+    let fn = function() { loadGainmap(gainmap_json_url); };
+    element.onclick = fn;
+    Gallery.appendChild(element);
+
+    let setThumbnail = function(gainmap_json) {
+      if (`thumbnail_url` in gainmap_json) {
+        element.src = gainmap_json.thumbnail_url;
+      }
+      element.src = gainmap_json.base_url;
+    }
+
+    // Fetch the JSON
+    fetch(gainmap_json_url)
+    .then(res => res.json())
+    .then(out => setThumbnail(out))
+    .catch();
+  }
+
+  HdrToSdrSlider.addEventListener('input', onHdrToSdrSliderChanged, false);
+  BackgroundGainSlider.addEventListener('input', onBackgroundGainSliderChanged, false);
+
+  // Configure the HDR screen info.
+  {
+    async function screenDetails() {
+      const screens = await window.getScreenDetails();
+      const s = screens.currentScreen;
+      function updateCurrentScreenInfo(s) {
+        display_hdr_headroom = log2(s.highDynamicRangeHeadroom).toFixed(2);
+        if (UpdateHdrToSdrFromScreen.checked) {
+          onHdrToSdrFromScreenChanged();
+        }
+        document.getElementById('DisplayValue').innerText =
+            'Screen HDR headroom: ' + display_hdr_headroom + '.';
+      }
+      updateCurrentScreenInfo(s);
+      screens.addEventListener('currentscreenchange', (event) => {
+        updateCurrentScreenInfo(s);
+      });
+    }
+    ButtonDetails.addEventListener('click', screenDetails);
+  }
+
+  let saveCanvas = function() {
+    save_requested = true;
+    draw();
+  }
+  ButtonSave.addEventListener('click', saveCanvas);
+
+  ButtonComputeGainmap.addEventListener('click', computeGainmap);
+  ButtonComputeAlternate.addEventListener('click', computeAlternate);
+}
+
+</script>
+</head>
+<body onload='main()'>
+
+
+<h3>Rendering Parameters</h3>
+<div style="text-align:center;">
+
+<p>
+Rendering mode:
+<input type="radio" id="RadioAdaptive"     name="render_mode" onchange='draw();' value="adaptive" checked="true">
+<label for="RadioAdaptive">Adaptive</label>
+
+<input type="radio" id="RadioBase"      name="render_mode" onchange='draw();' value="base">
+<label for="RadioBase">Base</label>
+
+<input type="radio" id="RadioGain"     name="render_mode" onchange='draw();' value="gainmap">
+<label for="RadioGain">Gainmap</label>
+
+<input type="radio" id="RadioAlternate" name="render_mode" onchange='draw();' value="alternate">
+<label for="RadioAlternate">Alternate</label>
+</p>
+
+<p style="text-align:center">
+<table style="margin-left: auto; margin-right: auto;">
+
+<tr>
+
+<td  style="text-align:center; width:300px;">
+  <p><label id="HdrToSdrSliderLabel" for="HdrToSdrSlider">Rendering HDR to SDR ratio: 1.00</label></p>
+  <p><input id="HdrToSdrSlider" type="range" min="0" max="5" step="0.1" value="0" list="tickmarks""/></p>
+  <datalist id="tickmarks">
+    <option value="0" label="0"></option>
+    <option value="1" label="1"></option>
+    <option value="2" label="2"></option>
+    <option value="3" label="3"></option>
+    <option value="4" label="4"></option>
+  </datalist>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td style="text-align:center; width:300px;">
+  <p id="DisplayValue">Screen HDR to SDR ratio: (unknown)</p>
+  <p><button type="button" id="ButtonDetails">Query display HDR to SDR ratio</button></p>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td style="text-align:center; width:300px;">
+  <p><label id="UpdateHdrToSdrFromScreenLabel" for="UpdateHdrToSdrFromScreen">Set rendering HDR to SDR ratio from screen:</label></p>
+  <p><input type="checkbox" id="UpdateHdrToSdrFromScreen" name="UpdateHdrToSdrFromScreen" value="true" onclick="onHdrToSdrFromScreenChanged();"></p>
+</td>
+
+<td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+<td  style="text-align:center; width:150px;">
+<p><label id="BackgroundGainSliderLabel" for="BackgroundGainSlider">Background gain: 1.00</label></p>
+<p><input id="BackgroundGainSlider" type="range" min="0" max="1" step="0.005" value="1"/></p>
+<p><button type="button" id="ButtonSave">Save Canvas</button></p>
+</td>
+
+</tr>
+</table>
+</p>
+
+</div>
+
+<h3>Rendering Canvas</h3>
+
+<div id='Viewer' style='text-align:center;'>
+  <p id='Warnings' hidden=true>Click an image from the gallery to view it</p>
+  <p><canvas id='Canvas' width='32' height='32'></canvas></p>
+</div>
+
+<h3>Gallery</h3>
+
+<div id='GalleryContainer'>
+<div id='Gallery' style="dynamic-range-limit:standard;">
+</div>
+</div>
+
+<h3>Gainmap image properties</h3>
+
+<p>
+<button type="button" id="ButtonComputeGainmap">Recompute gainmap</button>
+<button type="button" id="ButtonComputeAlternate">Compute alternate</button>
+</p>
+
+<p>
+<label for="GainMapMetadata_UseBaseImageColorSpace">Use base image color space</label>
+<input id="GainMapMetadata_UseBaseImageColorSpace" type="checkbox" onchange='onChange();' checked/>
+
+<br>
+
+<!-- Base image parameters -->
+<span style="width:80px;display:inline-block;">Base:</span>
+<label for="GainMapMetadata_BaseHdrHeadroom">HDR Headroom</label>:
+<input id="GainMapMetadata_BaseHdrHeadroom" type="number" value="0" onchange='onChange();'/>
+<label for="GainMapMetadata_BasePrimaries">Primaries</label>:
+<select id="GainMapMetadata_BasePrimaries" onchange='onChange();'>
+  <option value="1" selected>sRGB</option>
+  <option value="12">P3</option>
+  <option value="9">Rec2020</option>
+</select>
+<label for="GainMapMetadata_BaseTransfer">Transfer</label>:
+<select id="GainMapMetadata_BaseTransfer" onchange='onChange();'>
+  <option value="13" selected>sRGB</option>
+  <option value="4">Gamma 2.2</option>
+  <option value="16">PQ</option>
+  <option value="18">HLG</option>
+</select>
+
+<br>
+
+<!-- Alternate image parameters -->
+<span style="width:80px;display:inline-block;">Alternate:</span>
+<label for="GainMapMetadata_AlternateHdrHeadroom">HDR Headroom</label>:
+<input id="GainMapMetadata_AlternateHdrHeadroom" type="number" value="1" onchange='onChange();'/>
+<label for="GainMapMetadata_AlternatePrimaries">Primaries</label>:
+<select id="GainMapMetadata_AlternatePrimaries" onchange='onChange();'>
+  <option value="1" selected>sRGB</option>
+  <option value="12">P3</option>
+  <option value="9">Rec2020</option>
+</select>
+<label for="GainMapMetadata_AlternateTransfer">Transfer</label>:
+<select id="GainMapMetadata_AlternateTransfer" onchange='onChange();'>
+  <option value="13" selected>sRGB</option>
+  <option value="4">Gamma 2.2</option>
+  <option value="16">PQ</option>
+  <option value="18">HLG</option>
+</select>
+
+</p>
+
+
+<label for="GainMapMetadata_MultiChannel">Multi channel</label>
+<input id="GainMapMetadata_MultiChannel" type="checkbox" onchange='onChange();'/>
+
+<br>
+<table>
+<tr>
+<td id="GainMapMetadata_Channel0">
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel0_GainMapMin">Gain Map Min</label>:
+  </span>
+  <input id="GainMapMetadata_Channel0_GainMapMin" type="number" value="0" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel0_GainMapMax">Gain Map Max</label>:
+  </span>
+  <input id="GainMapMetadata_Channel0_GainMapMax" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel0_Gamma">Gamma</label>:
+  </span>
+  <input id="GainMapMetadata_Channel0_Gamma" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel0_BaseOffset">Base Offset</label>:<br>
+  </span>
+  <input id="GainMapMetadata_Channel0_BaseOffset" type="number" value="0.015625" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel0_AlternateOffset">Alternate Offset</label>:
+  </span>
+  <input id="GainMapMetadata_Channel0_AlternateOffset" type="number" value="0.015625" onchange='onChange();'/>
+</td>
+
+<td style="width:20px;"></td>
+
+<td id="GainMapMetadata_Channel1">
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel1_GainMapMin">Gain Map Min</label>:
+  </span>
+  <input id="GainMapMetadata_Channel1_GainMapMin" type="number" value="0" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel1_GainMapMax">Gain Map Max</label>:
+  </span>
+  <input id="GainMapMetadata_Channel1_GainMapMax" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel1_Gamma">Gamma</label>:
+  </span>
+  <input id="GainMapMetadata_Channel1_Gamma" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel1_BaseOffset">Base Offset</label>:<br>
+  </span>
+  <input id="GainMapMetadata_Channel1_BaseOffset" type="number" value="0.015625" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel1_AlternateOffset">Alternate Offset</label>:
+  </span>
+  <input id="GainMapMetadata_Channel1_AlternateOffset" type="number" value="0.015625" onchange='onChange();'/>
+
+<td style="width:20px;"></td>
+
+<td id="GainMapMetadata_Channel2">
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel2_GainMapMin">Gain Map Min</label>:
+  </span>
+  <input id="GainMapMetadata_Channel2_GainMapMin" type="number" value="0" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel2_GainMapMax">Gain Map Max</label>:
+  </span>
+  <input id="GainMapMetadata_Channel2_GainMapMax" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel2_Gamma">Gamma</label>:
+  </span>
+  <input id="GainMapMetadata_Channel2_Gamma" type="number" value="1" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel2_BaseOffset">Base Offset</label>:<br>
+  </span>
+  <input id="GainMapMetadata_Channel2_BaseOffset" type="number" value="0.015625" onchange='onChange();'/>
+  <br>
+
+  <span style="width:120px;display:inline-block;">
+    <label for="GainMapMetadata_Channel2_AlternateOffset">Alternate Offset</label>:
+  </span>
+  <input id="GainMapMetadata_Channel2_AlternateOffset" type="number" value="0.015625" onchange='onChange();'/>
+
+</tr>
+</table>
+
+</body>
+</html>
