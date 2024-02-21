@@ -542,6 +542,23 @@ function computeAlternate() {
   draw();
 }
 
+function swapBaseAndAlternate() {
+  computeAlternate();
+
+  var temp;
+  temp = base_size; base_size = alternate_size; alternate_size = temp;
+  temp = base_texture; base_texture = alternate_texture; alternate_texture = temp;
+  temp = GainMapMetadata_BaseHdrHeadroom.value; GainMapMetadata_BaseHdrHeadroom.value = GainMapMetadata_AlternateHdrHeadroom.value; GainMapMetadata_AlternateHdrHeadroom.value = temp;
+  temp = GainMapMetadata_Channel0_BaseOffset.value; GainMapMetadata_Channel0_BaseOffset.value = GainMapMetadata_Channel0_AlternateOffset.value; GainMapMetadata_Channel0_AlternateOffset.value = temp;
+  temp = GainMapMetadata_Channel1_BaseOffset.value; GainMapMetadata_Channel1_BaseOffset.value = GainMapMetadata_Channel1_AlternateOffset.value; GainMapMetadata_Channel1_AlternateOffset.value = temp;
+  temp = GainMapMetadata_Channel2_BaseOffset.value; GainMapMetadata_Channel2_BaseOffset.value = GainMapMetadata_Channel2_AlternateOffset.value; GainMapMetadata_Channel2_AlternateOffset.value = temp;
+  temp = GainMapMetadata_BasePrimaries.value; GainMapMetadata_BasePrimaries.value = GainMapMetadata_AlternatePrimaries.value; GainMapMetadata_AlternatePrimaries.value = temp;
+  temp = GainMapMetadata_BaseTransfer.value; GainMapMetadata_BaseTransfer.value = GainMapMetadata_AlternateTransfer.value; GainMapMetadata_AlternateTransfer.value = temp;
+
+  GainMapMetadata_UseBaseImageColorSpace.checked = !GainMapMetadata_UseBaseImageColorSpace.checked;
+  draw();
+}
+
 let draw = function() {
   setUniforms();
 
@@ -802,6 +819,7 @@ function main() {
 
   ButtonComputeGainmap.addEventListener('click', computeGainmap);
   ButtonComputeAlternate.addEventListener('click', computeAlternate);
+  ButtonSwapBaseAndAlternate.addEventListener('click', swapBaseAndAlternate);
 }
 
 </script>
@@ -894,6 +912,7 @@ Images are from Eric Chan's HDR <a href="https://people.csail.mit.edu/ericchan/h
 <p>
 <button type="button" id="ButtonComputeGainmap">Recompute gainmap</button>
 <button type="button" id="ButtonComputeAlternate">Compute alternate</button>
+<button type="button" id="ButtonSwapBaseAndAlternate">Swap base and alternate</button>
 </p>
 
 <p>
