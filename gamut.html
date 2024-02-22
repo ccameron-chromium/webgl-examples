@@ -13,6 +13,7 @@ var texture_xyzd50_lambda;
 var slice_matrix;
 var slice_vector;
 var flip_slice_vector;
+var save_count = 0;
 const no_slice_vector = [0, 0, 0, 1.0];
 
 const data_xyzd50_lambda = new Float32Array([
@@ -463,9 +464,6 @@ var plane_wire_indices = [0, 0];
 var plane_wire_indices_count = [0, 0];
 
 var view_fov = 5;
-var view_z = 4;
-var view_rotation_x = 13;
-var view_rotation_y = -54;
 
 let compileShader = function(gl, vertex_source, fragment_source) {
   let vertex_shader = gl.createShader(gl.VERTEX_SHADER);
@@ -889,17 +887,27 @@ const blit_fs = `
       float dx = 1.0 / viewport.x;
       float dy = 1.0 / viewport.y;
 
-      vec3 n = 2.0 * (texture2D(texture_normal, v_texcoord).rgb - vec3(0.5, 0.5, 0.5));
+      vec4 N = texture2D(texture_normal, v_texcoord);
+      vec3 n = 2.0 * (N.rgb - vec3(0.5, 0.5, 0.5));
       for (int i = 0; i < 2; ++i) {
         for (int j = 0; j < 2; ++j) {
           float x = v_texcoord.x + float(i - 1) * dx;
           float y = v_texcoord.y + float(j - 1) * dy;
-          vec3 n_ij = 2.0 * (texture2D(texture_normal, vec2(x,y)).rgb - vec3(0.5, 0.5, 0.5));
-          if (max(length(n), length(n_ij)) < 0.5) {
+          vec4 Nij = texture2D(texture_normal, vec2(x,y));
+          vec3 n_ij = 2.0 * (Nij.rgb - vec3(0.5, 0.5, 0.5));
+
+          // If the normal is zero then no edge.
+          if (max(length(n), length(n_ij)) < 0.9) {
             continue;
           }
+
+          // The alpha value can force segmentation.
+          if (Nij.a != N.a) {
+            return 1.0;
+          }
+
           float cos_theta = dot(n, n_ij);
-          if (cos_theta < 0.6) {
+          if (cos_theta < 0.9) {
             return 1.0;
           }
         }
@@ -996,7 +1004,7 @@ const gamut_vs = `#version 300 es
            cos(phi),
            sin(theta) * sin(phi),
            cos(theta) * sin(phi));
-        v_position = position_center + 0.025 * v_normal;
+        v_position = position_center + 0.03 * v_normal;
       } else {
         vec3 in_color = (matrixSubModel * position).xyz;
         v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
@@ -1105,6 +1113,9 @@ const gamut_fs = `#version 300 es
 
       f_out_normal.rgb = 0.5 * normalize(v_normal) + vec3(0.5);
       f_out_normal.a = 1.0;
+      if (input_position_type == kSphere) {
+        f_out_normal.a = 2.0;
+      }
 
 
     }`;
@@ -1609,9 +1620,9 @@ let drawToFbo = function(width, height) {
   }
   {
     let matrices = []
-    matrices.push(matrixTranslation(0, -0.2 * Math.max(view_z - 4), -view_z));
-    matrices.push(matrixRotation('x', view_rotation_x));
-    matrices.push(matrixRotation('y', view_rotation_y));
+    matrices.push(matrixTranslation(0, -0.1 * Math.max(CameraZ.value - 4), -CameraZ.value));
+    matrices.push(matrixRotation('x', CameraPhi.value));
+    matrices.push(matrixRotation('y', CameraTheta.value));
 
     if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked) {
     } else {
@@ -1829,6 +1840,7 @@ let drawToFbo = function(width, height) {
   };
   drawSphere(TestPoint0Gamut, TestPoint0X, TestPoint0Y, TestPoint0Z);
   drawSphere(TestPoint1Gamut, TestPoint1X, TestPoint1Y, TestPoint1Z);
+  drawSphere(TestPoint2Gamut, TestPoint2X, TestPoint2Y, TestPoint2Z);
 
   gl.uniformMatrix4fv(gl.getUniformLocation(gamut_program, 'matrixSubModel'), false, matrixIdentity());
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), 0);
@@ -1935,7 +1947,7 @@ let drawToFbo = function(width, height) {
 let draw = function() {
   canvas.width  = fbo_width;
   canvas.height = fbo_height;
-  canvas.style = 'width:640px; height:480px; border:1px solid black;';
+  canvas.style = 'width:640px; height:640px; border:1px solid black;';
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   drawToFbo(fbo_width, fbo_height);
@@ -2008,10 +2020,10 @@ function doMouseDrag(evt) {
   var dy = y - dragging_last_y;
 
   if (dragging_shift) {
-    view_z += 0.05 * dy;
+    CameraZ.value = Number(CameraZ.value) + 0.05 * dy;
   } else {
-    view_rotation_y += dx;
-    view_rotation_x += dy;
+    CameraTheta.value = Number(CameraTheta.value) + dx;
+    CameraPhi.value   = Number(CameraPhi.value) + dy;
   }
 
   dragging_last_x = x;
@@ -2062,7 +2074,8 @@ let initializeGL = function() {
     let download_link = document.createElement('a');
     let data_url = canvas.toDataURL(mime_type);
  
-    download_link.download = 'out.png';
+    download_link.download = 'out ' + save_count + '.png';
+    save_count += 1;
     download_link.href = data_url;
     download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
  
@@ -2073,7 +2086,7 @@ let initializeGL = function() {
   ButtonSave.addEventListener('click', saveCanvas);
 
   let warningsText = '';
-  gl = canvas.getContext('webgl2',  {antialias:false});
+  gl = canvas.getContext('webgl2',  {antialias:true});
   gl.getExtension('EXT_color_buffer_float');
   if (`drawingBufferStorage` in gl) {
     gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
@@ -2100,7 +2113,7 @@ let initializeGL = function() {
 
   {
     fbo_width = 640;
-    fbo_height = 480;
+    fbo_height = 640;
 
     texture_color = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture_color);
@@ -2165,7 +2178,7 @@ function main() {
   <p id="Axis1"      style="user-select:none; position: absolute; width:16px; height:16; z-index:2; text-align:center;">G</p>
   <p id="Axis2"      style="user-select:none; position: absolute; width:16px; height:16; z-index:3; text-align:center;">B</p>
 
-<canvas id='Canvas' width='640' height='480'>
+<canvas id='Canvas' width='640' height='640'>
 </canvas>
 </div>
 <p><button type="button" id="ButtonSave">Save Canvas</button></p>
@@ -2226,8 +2239,8 @@ Test point 0:
   <option value="oklab">OkLab</option>
   <option value="xyzd50">XYZ D50</option>
 </select>
-<input id="TestPoint0X" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<input id="TestPoint0Y" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint0X" type="number" value="0.9" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint0Y" type="number" value="0.04" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
 <input id="TestPoint0Z" type="number" value="0.0" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
 <br>
 
@@ -2241,10 +2254,31 @@ Test point 1:
   <option value="oklab">OkLab</option>
   <option value="xyzd51">XYZ D51</option>
 </select>
-<input id="TestPoint1X" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<input id="TestPoint1Y" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
-<input id="TestPoint1Z" type="number" value="1.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint1X" type="number" value="0.9" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint1Y" type="number" value="0.36" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint1Z" type="number" value="0.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<br>
 
+Test point 2:
+<select name="Test2Gamut" id="TestPoint2Gamut" onchange='onChange();'>
+  <option selected value="none">None</option>
+  <option value="srgb">sRGB</option>
+  <option value="p3">Display P3</option>
+  <option value="rec2020">Display Rec2020</option>
+  <option value="rec2020-yuv">Rec2020 YUV</option>
+  <option value="oklab">OkLab</option>
+  <option value="xyzd51">XYZ D51</option>
+</select>
+<input id="TestPoint2X" type="number" value="0.4" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint2Y" type="number" value="0.36" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+<input id="TestPoint2Z" type="number" value="0.0" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
+
+<p>
+Camera:
+<input id="CameraPhi"   type="number" value=13.0 style="width:50px;" step=0.0001 oninput='onChange();' onchange='onChange();'/>
+<input id="CameraTheta" type="number" value=-54.0 style="width:50px;" step=0.0001 oninput='onChange();' onchange='onChange();'/>
+<input id="CameraZ"     type="number" value=4 style="width:50px;" step=0.0001 oninput='onChange();' onchange='onChange();'/>
+</p>
 
 <p>
 <b>HDR</b>

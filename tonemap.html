@@ -1105,12 +1105,37 @@ function main() {
         'FinalGamutMap':'None',
         'FinalGamut':'rec2020'})});
 
-  ButtonPresetChromium.addEventListener('click', function() {
+  // Chromium.
+  ButtonPresetReinhardMaxRGB.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
         'ToneMapCurveBefore':true,
         'ToneMapCurveMaxRGB':1.0,
         'ToneMapCurveRpGpBp':0.0,
+        'ToneMapCurveYRGB':0.0,
+        'GamutMap':'Clamp',
+        'FinalGamutMap':'None',
+        'FinalGamut':'rec2020'})});
+
+  // Eric Chan suggestion.
+  ButtonPresetReinhardMix.addEventListener('click', function() {
+    restoreSettings({
+        'ToneMap':'Reinhard',
+        'ToneMapCurveBefore':false,
+        'ToneMapCurveMaxRGB':0.6,
+        'ToneMapCurveRpGpBp':0.4,
+        'ToneMapCurveYRGB':0.0,
+        'GamutMap':'Clamp',
+        'FinalGamutMap':'None',
+        'FinalGamut':'rec2020'})});
+
+  // BT.2408 cause it deserves consideration (grumble).
+  ButtonPresetBT2408Mix.addEventListener('click', function() {
+    restoreSettings({
+        'ToneMap':'BT2408',
+        'ToneMapCurveBefore':false,
+        'ToneMapCurveMaxRGB':0.6,
+        'ToneMapCurveRpGpBp':0.4,
         'ToneMapCurveYRGB':0.0,
         'GamutMap':'Clamp',
         'FinalGamutMap':'None',
@@ -1238,11 +1263,14 @@ function main() {
   <td style="text-align:center;">
     <p>Presets:</p>
         <button type="button" id="ButtonPresetHDR">HDR</button>
-        <button type="button" id="ButtonPresetChromium">Reinhard maxRGB</button>
-    <br><br>
+        <button type="button" id="ButtonPresetReinhardMaxRGB">Reinhard maxRGB</button>
+    <br>
+        <button type="button" id="ButtonPresetReinhardMix">Reinhard mix</button>
+        <button type="button" id="ButtonPresetBT2408Mix">2408 mix</button>
+    <br>
         <button type="button" id="ButtonPresetSave1">Save (1)</button>
         <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
-    <br><br>
+    <br>
         <button type="button" id="ButtonPresetSave2">Save (2)</button>
         <button type="button" id="ButtonPresetRestore2" disabled>Restore (2)</button>
   </td>
