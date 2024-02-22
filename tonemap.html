@@ -70,6 +70,11 @@ const kToneMapBT2446C = 7;
 const kToneMapBT2100HLG = 8;
 const kToneMapHLGAs22 = 9;
 
+const ToneMapInputMaxRGB = 0;
+const ToneMapInputYRGB = 1;
+const ToneMapInputRpGpBp = 2;
+const ToneMapInputMix = 3;
+
 const kTransferSRGB = 0;
 const kTransferHLG = 1;
 const kTransferPQ = 2;
@@ -99,6 +104,11 @@ const fs_constants = `
   int kToneMapBT2100HLG = 8;
   int kToneMapHLGAs22 = 9;
 
+  int ToneMapInputMaxRGB = 0;
+  int ToneMapInputYRGB = 1;
+  int ToneMapInputRpGpBp = 2;
+  int ToneMapInputMix = 3;
+
   int kTransferSRGB = 0;
   int kTransferHLG = 1;
   int kTransferPQ = 2;
@@ -123,7 +133,10 @@ const fs = `
   uniform float ndwl_white_nits;
   uniform float hlg_ootf_gamma;
   uniform int tonemap_mode;
-  uniform int tonemap_scalar_mode;
+  uniform int tonemap_weight_before;
+  uniform float tonemap_weight_maxRGB;
+  uniform float tonemap_weight_RpGpBp;
+  uniform float tonemap_weight_YRGB;
   uniform int gamut_map_mode;
   uniform int final_gamut_mode;
   uniform int final_gamut;
@@ -271,7 +284,7 @@ const fs = `
     return vec3(hlgOetf(c.r), hlgOetf(c.g), hlgOetf(c.b));
   }
 
-  float toneMapGainChrome(float L, float Lc, float Ld) {
+  float toneMapGainReinhard(float L, float Lc, float Ld) {
     if (Ld < Lc) {
       float a = Ld / (Lc*Lc);
       float b = 1.0 / Ld;
@@ -564,6 +577,33 @@ const fs = `
     return c;
   }
 
+  vec3 computeGain(vec3 tonemap_input) {
+    if (tonemap_mode == kToneMapReinhard) {
+      return vec3(toneMapGainReinhard(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+                  toneMapGainReinhard(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+                  toneMapGainReinhard(tonemap_input.b, clli_max_nits, ndwl_white_nits));
+    }
+    else if (tonemap_mode == kToneMapBT2408) {
+      // ITU-R BT.2408.
+      return vec3(toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+                  toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
+                  toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
+    }
+    else if (tonemap_mode == kToneMapBT2446A) {
+      // ITU-R BT.2446 Method A.
+      return vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
+                  toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
+                  toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
+    }
+    else if (tonemap_mode == kToneMapBT2446C) {
+      // ITU-R BT.2446 Method C.
+      return vec3(toneMapGainBT2446c(tonemap_input.r),
+                  toneMapGainBT2446c(tonemap_input.g),
+                  toneMapGainBT2446c(tonemap_input.b));
+    }
+    return vec3(0.0);
+  }
+
   void main() {
     // Treat everything as opaque. Just write RGB from here on.
     gl_FragColor.a = 1.0;
@@ -573,21 +613,6 @@ const fs = `
     // Convert to Rec2100 PQ and HLG signal (this is un-doing one of the above functions).
     vec3 c_rec2100pq = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
     vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
-
-    // For curve-based tonemap functions, compute the per-channel inputs.
-    vec3 tonemap_input = vec3(0.0, 0.0, 0.0);
-    if (tonemap_scalar_mode == 0) {
-      // maxRGB
-      tonemap_input = vec3(max(max(c.r, c.g), c.b));
-    }
-    else if (tonemap_scalar_mode == 1) {
-      // YRGB
-      tonemap_input = vec3(rec2020_rgb_to_yuv(c).r);
-    }
-    else if (tonemap_scalar_mode == 2) {
-      // R'G'B'
-      tonemap_input = c;
-    }
 
     if (tonemap_mode == kToneMapNone) {
       c /= ndwl_white_nits;
@@ -620,31 +645,26 @@ const fs = `
     else if (tonemap_mode == kToneMapHLGAs22) {
       c = pow(c_rec2100hlg, vec3(2.2, 2.2, 2.2));
     }
-    else if (tonemap_mode == kToneMapReinhard) {
-      c *= vec3(toneMapGainChrome(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-                toneMapGainChrome(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-                toneMapGainChrome(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-      c /= ndwl_white_nits;
-    }
-    else if (tonemap_mode == kToneMapBT2408) {
-      // ITU-R BT.2408.
-      c *= vec3(toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-                toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-                toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
-      c /= ndwl_white_nits;
-    }
-    else if (tonemap_mode == kToneMapBT2446A) {
-      // ITU-R BT.2446 Method A.
-      c *= vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-                toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-                toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-      c /= ndwl_white_nits;
-    }
-    else if (tonemap_mode == kToneMapBT2446C) {
-      // ITU-R BT.2446 Method C.
-      c *= vec3(toneMapGainBT2446c(tonemap_input.r),
-                toneMapGainBT2446c(tonemap_input.g),
-                toneMapGainBT2446c(tonemap_input.b));
+    else if (tonemap_mode == kToneMapReinhard ||
+             tonemap_mode == kToneMapBT2408   ||
+             tonemap_mode == kToneMapBT2446A  ||
+             tonemap_mode == kToneMapBT2446C) {
+      // For curve-based tonemap functions, compute the per-channel inputs.
+      vec3 tonemap_input_maxRGB =  vec3(max(max(c.r, c.g), c.b));
+      vec3 tonemap_input_RpGpBp =  c;
+      vec3 tonemap_input_YRGB   =  vec3(rec2020_rgb_to_yuv(c).r);
+
+      vec3 gain;
+      if (tonemap_weight_before == 1) {
+        gain = computeGain(tonemap_weight_maxRGB * tonemap_input_maxRGB +
+                           tonemap_weight_RpGpBp * tonemap_input_RpGpBp +
+                           tonemap_weight_YRGB   * tonemap_input_YRGB);
+      } else {
+        gain = tonemap_weight_maxRGB * computeGain(tonemap_input_maxRGB) +
+               tonemap_weight_RpGpBp * computeGain(tonemap_input_RpGpBp) +
+               tonemap_weight_YRGB   * computeGain(tonemap_input_YRGB);
+      }
+      c *= gain;
       c /= ndwl_white_nits;
     } else {
       c *= 0.0;
@@ -762,24 +782,10 @@ let draw = function() {
   gl.uniform1f(gl.getUniformLocation(program, 'clli_max_nits'), CLLIMaxNits.value);
   gl.uniform1f(gl.getUniformLocation(program, 'hlg_ootf_gamma'), hlg_ootf_gamma);
 
-  tonemap_curve_input_name = '';
-  switch (ToneMapCurveInput.value) {
-    case 'maxRGB':
-      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 0);
-      tonemap_curve_input_name += 'maxRGB';
-      break;
-    case 'YRGB':
-      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 1);
-      tonemap_curve_input_name += 'yRGB';
-      break;
-    case 'RpGpBp':
-      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), 2);
-      tonemap_curve_input_name += 'rpgpbp';
-      break;
-    default:
-      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_scalar_mode'), -1);
-      break;
-  }
+  gl.uniform1i(gl.getUniformLocation(program, 'tonemap_weight_before'), ToneMapCurveBefore.checked);
+  gl.uniform1f(gl.getUniformLocation(program, 'tonemap_weight_maxRGB'), ToneMapCurveMaxRGB.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'tonemap_weight_RpGpBp'), ToneMapCurveRpGpBp.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'tonemap_weight_YRGB'),   ToneMapCurveYRGB.value);
 
   let desc = '';
   let use_tonemap_curve = false;
@@ -830,13 +836,6 @@ let draw = function() {
     default:
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), -1);
       break;
-  }
-
-  if (use_tonemap_curve) {
-    ToneMapCurveInputLabel.innerText = 'Tone map curve input:'
-    desc += '-' + tonemap_curve_input_name;
-  } else {
-    ToneMapCurveInputLabel.innerText = 'Tone map curve input (NOT USED):'
   }
 
   ParamsToneMapCurve.hidden = !use_tonemap_curve;
@@ -1109,21 +1108,33 @@ function main() {
   ButtonPresetChromium.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
-        'ToneMapCurveInput':'maxRGB',
+        'ToneMapCurveBefore':true,
+        'ToneMapCurveMaxRGB':1.0,
+        'ToneMapCurveRpGpBp':0.0,
+        'ToneMapCurveYRGB':0.0,
         'GamutMap':'Clamp',
         'FinalGamutMap':'None',
         'FinalGamut':'rec2020'})});
 
   let restoreSettings = function(settings) {
     for (const [key, value] of Object.entries(settings)) {
-      document.getElementById(key).value = value;
+      let e = document.getElementById(key);
+      if (`value` in e) {
+        e.value = value;
+      }
+      if (`checked` in e) {
+        e.checked = value;
+      }
     }
     draw();
   }
   let saveSettings = function() {
     return {
       'ToneMap': ToneMap.value,
-      'ToneMapCurveInput': ToneMapCurveInput.value,
+      'ToneMapCurveBefore':ToneMapCurveBefore.checked,
+      'ToneMapCurveMaxRGB':ToneMapCurveMaxRGB.value,
+      'ToneMapCurveRpGpBp':ToneMapCurveRpGpBp.value,
+      'ToneMapCurveYRGB':ToneMapCurveYRGB.value,
       'GamutMap': GamutMap.value,
       'FinalGamutMap': FinalGamutMap.value,
       'FinalGamut': FinalGamut.value,
@@ -1287,14 +1298,25 @@ function main() {
 
   <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-  <td style="width:250px; vertical-align:top;">
+  <td style="width:300px; vertical-align:top;">
     <div id="ParamsToneMapCurve">
-    <label for="ToneMapCurveInput" id="ToneMapCurveInputLabel">Tone map curve input:</label><br>
-    <select name="ToneMapCurveInput" id="ToneMapCurveInput" onchange='onChange();'>
-      <option selected value="maxRGB">maxRGB</option>
-      <option value="YRGB">YRGB</option>
-      <option value="RpGpBp">R'G'B'</option>
-    </select>
+
+    <p>
+      <label for="ToneMapCurveBefore">Mix before applying curve</label>
+      <input id="ToneMapCurveBefore" type="checkbox" onchange='onChange();'/>
+    </p>
+
+    <p>
+      <input id="ToneMapCurveMaxRGB" type="number" step="0.01" min="0" max="1" value="0.6" onchange='onChange();'/>
+      maxRGB +
+      <br>
+      <input id="ToneMapCurveRpGpBp" type="number" step="0.01" min="0" max="1" value="0.6" onchange='onChange();'/>
+      R'G'B' +
+      <br>
+      <input id="ToneMapCurveYRGB"   type="number" step="0.01" min="0" max="1" value="0.0" onchange='onChange();'/>
+      YRGB
+    </p>
+
     </div>
 
     <div id="ParamsBT2100HLG">
