@@ -1118,7 +1118,7 @@ function main() {
         'FinalGamut':'rec2020'})});
 
   // Eric Chan suggestion.
-  ButtonPresetReinhardMix.addEventListener('click', function() {
+  ButtonPresetReinhard6040PostMix.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
         'ToneMapCurveBefore':false,
@@ -1130,12 +1130,12 @@ function main() {
         'FinalGamut':'rec2020'})});
 
   // BT.2408 cause it deserves consideration (grumble).
-  ButtonPresetBT2408Mix.addEventListener('click', function() {
+  ButtonPresetReinhard5050PreMix.addEventListener('click', function() {
     restoreSettings({
-        'ToneMap':'BT2408',
-        'ToneMapCurveBefore':false,
-        'ToneMapCurveMaxRGB':0.6,
-        'ToneMapCurveRpGpBp':0.4,
+        'ToneMap':'Reinhard',
+        'ToneMapCurveBefore':true,
+        'ToneMapCurveMaxRGB':0.5,
+        'ToneMapCurveRpGpBp':0.5,
         'ToneMapCurveYRGB':0.0,
         'GamutMap':'Clamp',
         'FinalGamutMap':'None',
@@ -1265,8 +1265,8 @@ function main() {
         <button type="button" id="ButtonPresetHDR">HDR</button>
         <button type="button" id="ButtonPresetReinhardMaxRGB">Reinhard maxRGB</button>
     <br>
-        <button type="button" id="ButtonPresetReinhardMix">Reinhard mix</button>
-        <button type="button" id="ButtonPresetBT2408Mix">2408 mix</button>
+        <button type="button" id="ButtonPresetReinhard6040PostMix">Reinhard 60/40 post-mix</button>
+        <button type="button" id="ButtonPresetReinhard5050PreMix">Reinhard 50/50 pre-mix</button>
     <br>
         <button type="button" id="ButtonPresetSave1">Save (1)</button>
         <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
