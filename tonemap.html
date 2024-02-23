@@ -708,10 +708,15 @@ let compileShader = function(gl, vertex_source, fragment_source) {
   return program;
 }
 
-let createTexture = function(image) {
+let createTexture = function(image, w = 0, h = 0) {
   texture = gl.createTexture();
-  texture_w = image.width;
-  texture_h = image.height;
+  if (w == 0) {
+    texture_w = image.width;
+    texture_h = image.height;
+  } else {
+    texture_w = w;
+    texture_h = h;
+  }
 
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
@@ -994,12 +999,12 @@ let initializeGL = function() {
   program = compileShader(gl, vs, fs);
 }
 
-let drawImage = function(image) {
-  createTexture(image);
+let drawImage = function(image, w = 0, h = 0) {
+  createTexture(image, w, h);
   computeImageMaxRGB();
 
-  viewport_w = image.width;
-  viewport_h = image.height;
+  viewport_w = texture_w;
+  viewport_h = texture_h;
   canvas.width = viewport_w;
   canvas.height = viewport_h;
   canvas.style = 'max-width:100%; max-height:85vh;';
@@ -1027,11 +1032,13 @@ let loadImage = function(url) {
 
     let video = Vid;
     let cb = function(now, metadata) {
-      console.log('CB!!');
+      drawImage(video, metadata.width, metadata.height);
+/*
       createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
         onChange();
         drawImage(image);
       });
+*/
     }
     video.requestVideoFrameCallback(cb);
     video.src = url;
