@@ -1,23 +1,118 @@
 <html>
 <body>
 
-<p style="background-color:rgb(100% 78.52% 86.15%);">
-This is oklch(90% 90% 0deg) gamut mapped to sRGB to rgb(100% 78.52% 86.15%).
-</p>
+Suppose an author specified<br><tt>oklch(90% 90% 0deg)</tt><img width=1px src="gradient-pq.avif">
 
 <p style="background-color:color(display-p3 1 0.7753 0.8575);">
-This is oklch(90% 90% 0deg) gamut mapped to P3 to color(display-p3 1 0.7753 0.8575).
+If they're authoring this on a P3 display, this is the color that they will see.
 </p>
 
-<p style="background-color:color(rec2020 1 0.7282 0.8325);">
-This is oklch(90% 90% 0deg) gamut mapped to Rec2020 color(rec2020 1 0.7282 0.8325).
+<p style="background-color:rgb(100% 78.52% 86.15%);">
+If they're authoring this on an sRGB display, this is the color that they will see.
 </p>
 
 <p style="background-color:oklch(90% 90% 0deg);">
-This is the color oklch(90% 90% 0deg) aka color(display-p3 1.406 0.346 0.825).<br>
-Some HDR displays (e.g, the higher end Macbook Pros) can produce this color.
-It is what I would call a "brilliant magenta".
+But this is the true color that they specified!
+One day, their content will be displayed on a device where that color can be produced!
 </p>
+
+<p>
+What will we do then?
+</p>
+
+<!--
+<p style="background-color:color(display-p3 1 0.7362 0.8525);">
+If they're authoring this on a P3 display, this is the color that they will see.
+</p>
+
+<p style="background-color:color(srgb 1 0.7168 0.8560);">
+If they're authoring this on an sRGB display, this is the color that they will see.
+</p>
+
+<p style="background-color:color(srgb 1.1209 0.7168 0.8560);">
+But this is the true color that they specified!
+One day, their content will be displayed on a device where that color can be produced!
+</p>
+
+<p>
+What will we do then?
+</p>
+-->
+
+<!--
+<p>
+Say to them "tough, you should have only specified P3 colors when you designed your page?"
+I reject this idea.
+</p>
+
+<p>
+Should we have instead have provided them with a color space with built-in guardrails to work in?
+I think yes!
+</p>
+
+<p>
+We can either update <tt>oklch</tt> to have built-in guardrails, so that it can never specify a color outside of an unsafe gamut.
+Or, we can introduce safe color spaces like <a href="https://bottosson.github.io/posts/colorpicker/"><tt>okhsv</tt></a>, along with variants that are P3-safe (say, <tt>okhsv-p3</tt>).
+</p>
+-->
+
+<!-- 
+And the result will look very different from what they wanted!!
+
+
+
+<div style="width: 100%; display: table;">
+    <div style="display: table-row">
+        <div style="width: 50%; display: table-cell;">
+
+With gamut mapping:
+
+<p>
+<span style="background-color:color(rec2020 1 0.7282 0.8325);">
+An author would see this on a Rec2020 display.
+</span>
+</p>
+
+<p>
+<span style="background-color:color(display-p3 1 0.7753 0.8575);">
+An author would see this on a P3 display.
+</span>
+</p>
+
+<p>
+<span style="background-color:rgb(100% 78.52% 86.15%);">
+An author would see this on a sRGB display.
+</p>
+
+</div>
+<div style="display: table-cell;">
+
+If <tt>oklab</tt> were to have gamut mapping baked in:
+
+<p>
+<span style="background-color:color(rec2020 1 0.7282 0.8325);">
+This would be real color's appearance.
+</span>
+</p>
+
+<p>
+<span style="background-color:color(display-p3 1 0.7352 0.8525);">
+An author would see this on a P3 display.
+</span>
+</p>
+
+<p>
+<span style="background-color:color(srgb 1 0.7168 0.8560);">
+An author would see this on an sRGB display.
+</span>
+</p>
+
+</div>
+</div>
+</div>
+-->
+
+<!--
 
 <p style="background-color:color(rec2020 1.0 0.4343 0.7975);">
 This is oklch(90% 90% 0deg) clamped to Rec2020 to color(rec2020 1.0 0.4343 0.7975).
