@@ -577,7 +577,11 @@ const gamut_common = `
   }
 
   float findCmax(vec3 Lab) {
-    Lab.yz = vec2(0.5) + normalize(Lab.yz - vec2(0.5));
+    vec2 ab = Lab.yz - vec2(0.5);
+    if (length(ab) < 0.001) {
+      return 1.0;
+    }
+    Lab.yz = vec2(0.5) + normalize(ab);
     vec3 Loo = vec3(min(Lab.x, 1.0), 0.5, 0.5);
     float alpha0 = 0.0;
     float alpha1 = 1.0;
@@ -596,10 +600,10 @@ const gamut_common = `
     }
     float alpha_final = 0.5 * (alpha0 + alpha1);
     Lab = alpha_final * Lab + (1.0 - alpha_final) * Loo;
-    vec2 ab = Lab.yz - vec2(0.5, 0.5);
+    ab = Lab.yz - vec2(0.5, 0.5);
     float Cmax = length(ab);
     if (Cmax < 0.001) {
-      Cmax = 0.001;
+      return 1.0;
     }
     return Cmax * 2.0;
   }

@@ -1,12 +1,12 @@
 <html>
 <head>
 <style>
-#drop-area {
+#DropArea {
   border: 2px dashed #ccc;
   border-radius: 20px;
   padding: 10px;
 }
-#drop-area.highlight {
+#DropArea.highlight {
   border-color: purple;
 }
 </style>
@@ -69,6 +69,7 @@ const kToneMapBT2446A = 6;
 const kToneMapBT2446C = 7;
 const kToneMapBT2100HLG = 8;
 const kToneMapHLGAs22 = 9;
+const kToneMapBT2446A_redo = 10;
 
 const ToneMapInputMaxRGB = 0;
 const ToneMapInputYRGB = 1;
@@ -103,6 +104,7 @@ const fs_constants = `
   int kToneMapBT2446C = 7;
   int kToneMapBT2100HLG = 8;
   int kToneMapHLGAs22 = 9;
+  int kToneMapBT2446A_redo = 10;
 
   int ToneMapInputMaxRGB = 0;
   int ToneMapInputYRGB = 1;
@@ -327,6 +329,53 @@ const fs = `
     float E4 = E3 * (pqNitsToSignal(Lw) - pqNitsToSignal(Lb)) + pqNitsToSignal(Lb);
     return pqSignalToNits(E4) / Eprime;
   }
+
+  vec3 toneMapBT2446a(vec3 RGB) {
+    float L_HDR = clli_max_nits;
+    float L_SDR = ndwl_white_nits;
+    float rho_HDR = 1.0 + 32.0 * pow(L_HDR / 10000.0, 1.0/2.4);
+    float rho_SDR = 1.0 + 32.0 * pow(L_SDR / 10000.0, 1.0/2.4);
+
+    // A normalized (to L_HDR) full-range linear display-light HDR signal RGB.
+    RGB /= L_HDR;
+    RGB = clamp(RGB, 0.0, 1.0);
+
+    float Rprime = pow(RGB.r, 1.0/2.4);
+    float Gprime = pow(RGB.g, 1.0/2.4);
+    float Bprime = pow(RGB.b, 1.0/2.4);
+
+    float Yprime = 0.2627*Rprime + 0.6780*Gprime + 0.0593*Bprime;
+    float Yprime_p = log(1.0 + (rho_HDR - 1.0)*Yprime) / log(rho_HDR);
+
+    float Yprime_c = 0.0;
+    if (Yprime_p < 0.0) {
+      Yprime_c = 0.0;
+    } else if (Yprime_p < 0.7399) {
+      Yprime_c = 1.0770 * Yprime_p;
+    } else if (Yprime_p < 0.9909) {
+      Yprime_c = -1.1510 * pow(Yprime_p, 2.0) + 2.7811*Yprime_p - 0.6302;
+    } else if (Yprime_p <= 1.0) {
+      Yprime_c = 0.5 * Yprime_p + 0.5;
+    } else {
+      Yprime_c = 1.0;
+    }
+
+    float Yprime_SDR = (pow(rho_SDR, Yprime_c) - 1.0) / (rho_SDR - 1.0);
+
+    return (pow(Yprime_SDR, 2.4) / Yprime) * RGB;
+
+    float f_Yprime_SDR = Yprime_SDR / (1.1 * Yprime);
+
+    float Cprime_b_TMO = f_Yprime_SDR * (Bprime - Yprime) / 1.8814;
+    float Cprime_r_TMO = f_Yprime_SDR * (Rprime - Yprime) / 1.4746;
+
+    float Yprime_TMO = Yprime_SDR - max(0.1 * Cprime_r_TMO, 0.0);
+
+    vec3 YCbCr_TMO = vec3(Yprime_TMO, Cprime_b_TMO, Cprime_r_TMO);
+
+    return rec2020_yuv_to_rgb(YCbCr_TMO);
+  }
+  
 
   float toneMapGainBT2446a(float Y_HDR, float L_HDR, float L_SDR) {
     float rho_hdr = 1.0 + 32.0 * pow(L_HDR / 10000.0, 1.0/2.4);
@@ -645,6 +694,9 @@ const fs = `
     else if (tonemap_mode == kToneMapHLGAs22) {
       c = pow(c_rec2100hlg, vec3(2.2, 2.2, 2.2));
     }
+    else if (tonemap_mode == kToneMapBT2446A_redo) {
+      c = toneMapBT2446a(c);
+    }
     else if (tonemap_mode == kToneMapReinhard ||
              tonemap_mode == kToneMapBT2408   ||
              tonemap_mode == kToneMapBT2446A  ||
@@ -758,7 +810,15 @@ let computeImageMaxRGB = function() {
       'Max RGB: ' + image_max_rgb.toFixed(2) + ' (' + image_max_nits_rgb + ' nits)<br>' +
       'Max Y: '   + image_max_Y.toFixed(2)   + ' (' + image_max_nits_Y   + ' nits)';
 
-  CLLIMaxNits.value = image_max_nits_Y;
+  if (SignalTransfer.value == 'pq') {
+    CLLIMaxNits.value = image_max_nits_Y;
+  }
+  if (SignalTransfer.value == 'hlg') {
+    CLLIMaxNits.value = 1000;
+  }
+  if (SignalTransfer.value == 'srgb') {
+    CLLIMaxNits.value = 203;
+  }
 }
 
 let draw = function() {
@@ -823,7 +883,7 @@ let draw = function() {
     case 'BT2446A':
       use_tonemap_curve = true;
       desc = 'bt2446a';
-      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2446A);
+      gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), kToneMapBT2446A_redo);
       break;
     case 'BT2446C':
       use_tonemap_curve = true;
@@ -1031,16 +1091,31 @@ let loadImage = function(url) {
     console.log('Failed to create image... trying as a video?');
 
     let video = Vid;
-    let cb = function(now, metadata) {
-      drawImage(video, metadata.width, metadata.height);
-/*
-      createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
-        onChange();
-        drawImage(image);
-      });
-*/
+    if (`requestVideoFrameCallback` in video) {
+      let cb = function(now, metadata) {
+        drawImage(video, metadata.width, metadata.height);
+        /*
+        createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
+          onChange();
+          drawImage(image);
+        });
+        */
+        video.requestVideoFrameCallback(cb);
+      }
+      video.requestVideoFrameCallback(cb);
+    } else {
+      let poll_for_frame = function() {
+        createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
+          console.log('Got a video frame!');
+          onChange();
+          drawImage(image);
+        }).catch((err) => {
+          console.log('Polling for frame ... not ready ...');
+          window.requestAnimationFrame(poll_for_frame);
+        })
+      }
+      window.requestAnimationFrame(poll_for_frame);
     }
-    video.requestVideoFrameCallback(cb);
     video.src = url;
     video.play();
   }
@@ -1202,8 +1277,14 @@ function main() {
     draw();
   });
 
+  DropArea.addEventListener('drop', function (evt) {
+    onDrop(evt);
+  });
+  DropArea.addEventListener('dragover', function (evt) {
+    evt.preventDefault();
+  });
+
   loadImage('staircase-pq.avif');
-  // loadImage('tonemap/image_01.png');
 }
 </script>
 </head>
@@ -1214,7 +1295,7 @@ function main() {
 <table style="margin-left: auto; margin-right: auto;">
   <tr>
     <td>
-      <div id="drop-area" ondrop="onDrop(event)" ondragover="allowDrop(event)">
+      <div id="DropArea">
       Drop HDR image here.
       </div>
       <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
@@ -1385,7 +1466,7 @@ function main() {
 </div>
 </div>
 
-<video id='Vid' hidden></video>
+<video id='Vid' hidden muted loop></video>
 
 </body>
 </html>
