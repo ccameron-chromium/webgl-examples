@@ -498,6 +498,7 @@ const gamut_common = `
   const int kRec2020 = 10;
   const int kRec2020Linear = 3;
   const int kOkLab = 4;
+  const int kOkHslabish = 11;
   const int kWavelength = 5;
   const int kSphere = 8;
 
@@ -573,6 +574,66 @@ const gamut_common = `
     vec3 x = oklab_to_lms * (Lab - vec3(0.0, 0.5, 0.5));
     vec3 lms = sign(x) * pow(abs(x), vec3(3.0));
     return xyzd65_to_xyzd50 * lms_to_xyzd65 * lms;
+  }
+
+  float findCmax(vec3 Lab) {
+    Lab.yz = vec2(0.5) + normalize(Lab.yz - vec2(0.5));
+    vec3 Loo = vec3(min(Lab.x, 1.0), 0.5, 0.5);
+    float alpha0 = 0.0;
+    float alpha1 = 1.0;
+    for (int i = 0; i < 64; ++i) {
+      float alpha_test = 0.5 * (alpha0 + alpha1);
+      vec3 Lab_test = alpha_test * Lab + (1.0 - alpha_test) * Loo;
+
+      vec3 xyzd50_test = oklab_to_xyzd50(Lab_test);
+      vec3 srgb_test = xyzd50_to_srgb * xyzd50_test;
+
+      if (srgb_test == clamp(srgb_test, 0.0, 1.0)) {
+        alpha0 = alpha_test;
+      } else {
+        alpha1 = alpha_test;
+      }
+    }
+    float alpha_final = 0.5 * (alpha0 + alpha1);
+    Lab = alpha_final * Lab + (1.0 - alpha_final) * Loo;
+    vec2 ab = Lab.yz - vec2(0.5, 0.5);
+    float Cmax = length(ab);
+    if (Cmax < 0.001) {
+      Cmax = 0.001;
+    }
+    return Cmax * 2.0;
+  }
+
+  float toe(float x) {
+    float k_1 = 0.206;
+    float k_2 = 0.03;
+    float k_3 = (1.0 + k_1) / (1.0 + k_2);
+    return 0.5 * (k_3 * x - k_1 + sqrt((k_3 * x - k_1) * (k_3 * x - k_1) + 4.0 * k_2 * k_3 * x));
+  }
+
+  float toe_inv(float x) {
+    float k_1 = 0.206;
+    float k_2 = 0.03;
+    float k_3 = (1.0 + k_1) / (1.0 + k_2);
+    return (x * x + k_1 * x) / (k_3 * (x + k_2));
+  }
+
+  vec3 oklab_to_okhslabish(vec3 Lab) {
+    float cmax = findCmax(Lab);
+    Lab.yz -= vec2(0.5, 0.5);
+    Lab.yz /= cmax;
+    Lab.yz += vec2(0.5, 0.5);
+    Lab.x = toe(Lab.x);
+    return Lab;
+  }
+
+  vec3 okhslabish_to_oklab(vec3 hsLabish) {
+    hsLabish.x = toe_inv(hsLabish.x);
+    float cmax = findCmax(hsLabish);
+    hsLabish.yz -= vec2(0.5, 0.5);
+    hsLabish.yz *= cmax;
+    hsLabish.yz += vec2(0.5, 0.5);
+    return hsLabish;
   }
 
   vec3 lambda_to_xyzd50(vec3 c) {
@@ -662,7 +723,10 @@ const gamut_common = `
     if (from == kWavelength) {
       c = lambda_to_xyzd50(c);
     }
-    else if (from == kOkLab) {
+    else if (from == kOkLab || from == kOkHslabish) {
+      if (from == kOkHslabish) {
+        c = okhslabish_to_oklab(c);
+      }
       c = oklab_to_xyzd50(c);
     }
 
@@ -682,8 +746,11 @@ const gamut_common = `
     }
 
     // Direct-from-XYZD50 conversions.
-    if (to == kOkLab) {
+    if (to == kOkLab || to == kOkHslabish) {
       c = xyzd50_to_oklab(c);
+      if (to == kOkHslabish) {
+        c = oklab_to_okhslabish(c);
+      }
     }
 
     // Convert primaries from XYZD50
@@ -954,6 +1021,7 @@ const kP3Linear = 6;
 const kRec2020 = 10;
 const kRec2020Linear = 3;
 const kOkLab = 4;
+const kOkHslabish = 11;
 const kWavelength = 5;
 const kSphere = 8;
 
@@ -975,6 +1043,8 @@ let getGamutNumber = function(gamut) {
       return kRec2020YUV;
     case 'oklab':
       return kOkLab;
+    case 'okhslabish':
+      return kOkHslabish;
     case 'xyz':
       return kXYZ;
   }
@@ -1624,7 +1694,7 @@ let drawToFbo = function(width, height) {
     matrices.push(matrixRotation('x', CameraPhi.value));
     matrices.push(matrixRotation('y', CameraTheta.value));
 
-    if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked) {
+    if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked || RadioGeo_OkHslabish.checked) {
     } else {
       matrices.push(matrixRotation('x', 55));
       matrices.push(matrixRotation('y', -135));
@@ -1657,7 +1727,7 @@ let drawToFbo = function(width, height) {
     Axis0.innerText = 'R'; Axis1.innerText = 'G'; Axis2.innerText = 'B';
     out_space = kRec2020Linear;
   }
-  if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked) {
+  if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked || RadioGeo_OkHslabish.checked) {
     moveElementToPoint(AxisOrigin, matrixModelViewProjection, [-0.08, 0.5, 0.5, 1]);
     moveElementToPoint(Axis0,      matrixModelViewProjection, [1, 0.5, 0.5, 1]);
     moveElementToPoint(Axis1,      matrixModelViewProjection, [0, 1,   0.5, 1]);
@@ -1665,6 +1735,9 @@ let drawToFbo = function(width, height) {
     Axis0.innerText = 'L=1'; Axis1.innerText = 'a=0.5'; Axis2.innerText = 'b=0.5';
   }
 
+  if (RadioGeo_OkHslabish.checked) {
+    out_space = kOkHslabish;
+  }
   if (RadioGeo_OkLab.checked) {
     out_space = kOkLab;
   }
@@ -1810,7 +1883,7 @@ let drawToFbo = function(width, height) {
   let drawSphere = function(pointGamut, pointX, pointY, pointZ) {
   if (pointGamut.value != 'none') {
     let testPoint = [Number(pointX.value), Number(pointY.value), Number(pointZ.value)];
-      if (pointGamut.value == 'oklab') {
+      if (pointGamut.value == 'oklab' || pointGamut.value == 'okhslabish') {
         testPoint[1] += 0.5;
         testPoint[2] += 0.5;
       }
@@ -2221,6 +2294,9 @@ Geometric coordinate color space<br>
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_OkLab" checked>
 <label for="RadioGeo_OkLab">OkLab</label>
 
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_OkHslabish">
+<label for="RadioGeo_OkHslabish">OkHsl-ish</label>
+
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_XYZ">
 <label for="RadioGeo_XYZ">XYZD50</label>
 
@@ -2237,6 +2313,7 @@ Test point 0:
   <option value="rec2020">Display Rec2020</option>
   <option value="rec2020-yuv">Rec2020 YUV</option>
   <option value="oklab">OkLab</option>
+  <option value="okhslabish">OkHsl-ish</option>
   <option value="xyzd50">XYZ D50</option>
 </select>
 <input id="TestPoint0X" type="number" value="0.9" style="width:50px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
@@ -2252,6 +2329,7 @@ Test point 1:
   <option value="rec2020">Display Rec2020</option>
   <option value="rec2020-yuv">Rec2020 YUV</option>
   <option value="oklab">OkLab</option>
+  <option value="okhslabish">OkHsl-ish</option>
   <option value="xyzd51">XYZ D51</option>
 </select>
 <input id="TestPoint1X" type="number" value="0.9" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
@@ -2267,6 +2345,7 @@ Test point 2:
   <option value="rec2020">Display Rec2020</option>
   <option value="rec2020-yuv">Rec2020 YUV</option>
   <option value="oklab">OkLab</option>
+  <option value="okhslabish">OkHsl-ish</option>
   <option value="xyzd51">XYZ D51</option>
 </select>
 <input id="TestPoint2X" type="number" value="0.4" style="width:51px;" step=0.01 oninput='onChange();' onchange='onChange();'/>
