@@ -663,6 +663,9 @@ const fs = `
     vec3 c_rec2100pq = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
     vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
 
+    // Clamp to the indicated maximum
+    c = min(c, clli_max_nits);
+
     if (tonemap_mode == kToneMapNone) {
       c /= ndwl_white_nits;
     }
@@ -1093,13 +1096,16 @@ let loadImage = function(url) {
     let video = Vid;
     if (`requestVideoFrameCallback` in video) {
       let cb = function(now, metadata) {
-        drawImage(video, metadata.width, metadata.height);
-        /*
-        createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
-          onChange();
-          drawImage(image);
-        });
-        */
+        video.hidden = false;
+        if (1) {
+          drawImage(video, metadata.width, metadata.height);
+        } else {
+          createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
+            onChange();
+            drawImage(image);
+          });
+        }
+        video.pause();
         video.requestVideoFrameCallback(cb);
       }
       video.requestVideoFrameCallback(cb);
@@ -1120,6 +1126,7 @@ let loadImage = function(url) {
     video.play();
   }
   image.src = url;
+  Vid.hidden = true;
 }
 
 let onChange = function() {
@@ -1297,6 +1304,7 @@ function main() {
     <td>
       <div id="DropArea">
       Drop HDR image here.
+      <p id="VidContainer"><video style="width:200px;"id='Vid' hidden muted controls></video></p>
       </div>
       <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
     </td>
@@ -1465,8 +1473,6 @@ function main() {
 
 </div>
 </div>
-
-<video id='Vid' hidden muted loop></video>
 
 </body>
 </html>
