@@ -6,8 +6,8 @@ var gl;
 var program;
 
 var base_texture = null;
-var alternate_texture = null;
-var gain_map_texture = null;
+var altr_texture = null;
+var gain_texture = null;
 var adapted_texture = null;
 
 var base_size = [0,0];
@@ -97,8 +97,8 @@ const vs = `uniform int flip_y;
 const fs = `
   precision mediump float;
   uniform sampler2D base_texture;
-  uniform sampler2D alternate_texture;
-  uniform sampler2D gain_map_texture;
+  uniform sampler2D altr_texture;
+  uniform sampler2D gain_texture;
 
   uniform vec3 gain_map_min;
   uniform vec3 gain_map_max;
@@ -115,6 +115,9 @@ const fs = `
   uniform int alternate_transfer;
 
   uniform int working_primaries;
+
+  uniform int drawingbuffer_primaries;
+  uniform int drawingbuffer_transfer;
 
   uniform float weight;
   uniform float background_gain;
@@ -313,7 +316,7 @@ const fs = `
     base = toLinear(base, base_transfer);
     base = convertPrimaries(base, base_primaries, working_primaries);
 
-    vec3 g = texture2D(gain_map_texture, texcoord).rgb;
+    vec3 g = texture2D(gain_texture, texcoord).rgb;
     g = pow(g, vec3(1.0)/gamma);
     g = gain_map_min + (gain_map_max - gain_map_min) * g;
     return (base + base_offset) * exp2(w * g) - alternate_offset;
@@ -324,7 +327,7 @@ const fs = `
     base = toLinear(base, base_transfer);
     base = convertPrimaries(base, base_primaries, working_primaries);
 
-    vec3 alternate = texture2D(alternate_texture, texcoord).rgb;
+    vec3 alternate = texture2D(altr_texture, texcoord).rgb;
     alternate = toLinear(alternate, alternate_transfer);
     alternate = convertPrimaries(alternate, alternate_primaries, working_primaries);
 
@@ -349,16 +352,16 @@ const fs = `
     if (mode == kModeBase) {
       c = texture2D(base_texture, texcoord).rgb;
       c = toLinear(c, base_transfer);
-      c = convertPrimaries(c, base_primaries, kPrimariesSRGB);
+      c = convertPrimaries(c, base_primaries, drawingbuffer_primaries);
     } else if (mode == kModeAdaptive) {
       c = applyGainmap(weight);
-      c = convertPrimaries(c, working_primaries, kPrimariesSRGB);
+      c = convertPrimaries(c, working_primaries, drawingbuffer_primaries);
     } else if (mode == kModeAlternate) {
-      c = texture2D(alternate_texture, texcoord).rgb;
+      c = texture2D(altr_texture, texcoord).rgb;
       c = toLinear(c, alternate_transfer);
-      c = convertPrimaries(c, alternate_primaries, kPrimariesSRGB);
+      c = convertPrimaries(c, alternate_primaries, drawingbuffer_primaries);
     } else if (mode == kModeGainmap) {
-      c = texture2D(gain_map_texture, texcoord).rgb;
+      c = texture2D(gain_texture, texcoord).rgb;
     } else if (mode == kModeComputeAlternate) {
       c = applyGainmap(sign(alternate_hdr_headroom - base_hdr_headroom));
       c = convertPrimaries(c, working_primaries, alternate_primaries);
@@ -370,7 +373,7 @@ const fs = `
       gl_FragColor.rgb = c;
       return;
     } 
-    gl_FragColor.rgb = linearToSrgb(background_gain * c);
+    gl_FragColor.rgb = fromLinear(background_gain * c, drawingbuffer_transfer);
   }`;
 
 let compileShader = function(gl, vertex_source, fragment_source) {
@@ -419,13 +422,13 @@ let setUniforms = function() {
   }
   {
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, gain_map_texture);
-    gl.uniform1i(gl.getUniformLocation(program, 'gain_map_texture'), 1);
+    gl.bindTexture(gl.TEXTURE_2D, gain_texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'gain_texture'), 1);
   }
   {
     gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, alternate_texture);
-    gl.uniform1i(gl.getUniformLocation(program, 'alternate_texture'), 2);
+    gl.bindTexture(gl.TEXTURE_2D, altr_texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'altr_texture'), 2);
   }
 
   gl.uniform3fv(gl.getUniformLocation(program, 'gain_map_min'),     get_channel_param('GainMapMin'));
@@ -453,6 +456,18 @@ let setUniforms = function() {
   } else {
     gl.uniform1i(gl.getUniformLocation(program, 'working_primaries'),
         Number(GainMapMetadata_AlternatePrimaries.value));
+  }
+
+  if (save_requested) {
+    gl.drawingBufferColorSpace = 'rec2100-pq';
+    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_primaries'), kPrimariesRec2020);
+    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_transfer'), kTransferPQ);
+  } else {
+    if (gl.drawingBufferColorSpace != 'srgb') {
+      gl.drawingBufferColorSpace = 'srgb';
+    }
+    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_primaries'), kPrimariesSRGB);
+    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_transfer'), kTransferSRGB);
   }
 
   {
@@ -487,7 +502,7 @@ function drawQuad(flipY = false) {
 }
 
 function computeGainmap() {
-  if (!base_texture || !alternate_texture) {
+  if (!base_texture || !altr_texture) {
     throw('Need both base and alternate to compute gainmap!');
   }
 
@@ -496,16 +511,16 @@ function computeGainmap() {
   gain_map_size[1] = Math.min(base_size[1], alternate_size[1]);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, null);
-  if (gain_map_texture) {
-    gl.deleteTexture(gain_map_texture);
+  if (gain_texture) {
+    gl.deleteTexture(gain_texture);
   }
-  gain_map_texture = createTexture(gain_map_size, null);
+  gain_texture = createTexture(gain_map_size, null);
 
   gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeComputeGainmap);
 
   let fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, gain_map_texture, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, gain_texture, 0);
   if (gl.FRAMEBUFFER_COMPLETE != gl.checkFramebufferStatus(gl.FRAMEBUFFER)) {
     throw('Incomplete framebuffer');
   }
@@ -522,16 +537,16 @@ function computeAlternate() {
   alternate_size[1] = base_size[1];
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, null);
-  if (alternate_texture) {
-    gl.deleteTexture(alternate_texture);
+  if (altr_texture) {
+    gl.deleteTexture(altr_texture);
   }
-  alternate_texture = createTexture(alternate_size, null);
+  altr_texture = createTexture(alternate_size, null);
 
   gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeComputeAlternate);
 
   let fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, alternate_texture, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, altr_texture, 0);
   if (gl.FRAMEBUFFER_COMPLETE != gl.checkFramebufferStatus(gl.FRAMEBUFFER)) {
     throw('Incomplete framebuffer');
   }
@@ -547,7 +562,7 @@ function swapBaseAndAlternate() {
 
   var temp;
   temp = base_size; base_size = alternate_size; alternate_size = temp;
-  temp = base_texture; base_texture = alternate_texture; alternate_texture = temp;
+  temp = base_texture; base_texture = altr_texture; altr_texture = temp;
   temp = GainMapMetadata_BaseHdrHeadroom.value; GainMapMetadata_BaseHdrHeadroom.value = GainMapMetadata_AlternateHdrHeadroom.value; GainMapMetadata_AlternateHdrHeadroom.value = temp;
   temp = GainMapMetadata_Channel0_BaseOffset.value; GainMapMetadata_Channel0_BaseOffset.value = GainMapMetadata_Channel0_AlternateOffset.value; GainMapMetadata_Channel0_AlternateOffset.value = temp;
   temp = GainMapMetadata_Channel1_BaseOffset.value; GainMapMetadata_Channel1_BaseOffset.value = GainMapMetadata_Channel1_AlternateOffset.value; GainMapMetadata_Channel1_AlternateOffset.value = temp;
@@ -562,32 +577,29 @@ function swapBaseAndAlternate() {
 let draw = function() {
   setUniforms();
 
-  if (RadioAdaptive.checked) {
+  if (RadioAdaptive.checked && base_texture && gain_texture) {
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeAdaptive);
-  }
-  if (RadioBase.checked) {
+  } else if (RadioBase.checked && base_texture) {
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeBase);
-  }
-  if (RadioGain.checked) {
+  } else if (RadioGain.checked && gain_texture) {
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeGainmap);
-  }
-  if (RadioAlternate.checked) {
+  } else if (RadioAlternate.checked && altr_texture) {
     gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeAlternate);
+  } else if (base_texture) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeBase);
+  } else if (altr_texture) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeAlternate);
+  } else if (gain_texture) {
+    gl.uniform1i(gl.getUniformLocation(program, 'mode'), kModeGainmap);
   }
 
   drawQuad(flipY = true);
 
-  /*
   if (save_requested) {
     save_requested = false;
-    var mime_type = "image/jpeg";
+    var mime_type = "image/png";
     var download_link = document.createElement('a');
-    download_link.download =
-        'canvas-' +
-        'bg-' + (255 * linearToSrgb(BackgroundGainSlider.value)).toFixed() + '-' + 
-        mode + '-' +
-        'hdr-' + (hdr_headroom *  1.0).toFixed(2) +
-        '.jpg';
+    download_link.download = 'canvas.png';
     download_link.href = canvas.toDataURL(mime_type);
     download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
  
@@ -595,7 +607,7 @@ let draw = function() {
     download_link.click();
     document.body.removeChild(download_link);
   }
-  */
+
 }
 
 let initializeGL = function() {
@@ -633,51 +645,57 @@ let initializeGL = function() {
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
 
-let onImagesLoaded = function() {
-  canvas.width = viewport_w;
-  canvas.height = viewport_h;
-  canvas.style = 'max-width:100%; max-height:75vh;';
-  gl.viewport(0, 0, viewport_w, viewport_h);
+let loadBaseImage = function(src) {
+  let image_base = new Image();
+  image_base.onload = function() {
+    base_size[0] = image_base.width;
+    base_size[1] = image_base.height;
+    base_texture = createTexture(base_size, image_base);
 
-  draw();
+    viewport_w = image_base.width;
+    viewport_h = image_base.height;
+    canvas.width = viewport_w;
+    canvas.height = viewport_h;
+    canvas.style = 'max-width:100%; max-height:75vh;';
+    gl.viewport(0, 0, viewport_w, viewport_h);
+
+    draw();
+  }
+  image_base.src = src;
+}
+
+let loadGainImage = function(src) {
+  image_gainmap = new Image();
+  image_gainmap.onload = function() {
+    gain_map_size[0] = image_gainmap.width;
+    gain_map_size[1] = image_gainmap.height;
+    gain_texture = createTexture(gain_map_size, image_gainmap);
+
+    draw();
+  }
+  image_gainmap.src = src;
+}
+
+let loadAltrImage = function(src) {
+  image_altr = new Image();
+  image_altr.onload = function() {
+    alternate_size[0] = image_altr.width;
+    alternate_size[1] = image_altr.height;
+    altr_texture = createTexture(alternate_size, image_altr);
+
+    draw();
+  }
+  image_altr.src = src;
 }
 
 let onGainmapJsonLoaded = function(gainmap_json) {
-  let image_sdr = new Image();
-  image_sdr.onload = function() {
-    base_size[0] = image_sdr.width;
-    base_size[1] = image_sdr.height;
-    base_texture = createTexture(base_size, image_sdr);
-
-    viewport_w = image_sdr.width;
-    viewport_h = image_sdr.height;
-
-    if (base_texture && gain_map_texture)
-      onImagesLoaded();
-  }
-  image_sdr.src = gainmap_json.base_url;
+  loadBaseImage(gainmap_json.base_url);
 
   if (`gainmap_url` in gainmap_json) {
-    image_gainmap = new Image();
-    image_gainmap.onload = function() {
-      gain_map_size[0] = image_gainmap.width;
-      gain_map_size[1] = image_gainmap.height;
-      gain_map_texture = createTexture(gain_map_size, image_gainmap);
-      if (base_texture && gain_map_texture)
-        onImagesLoaded();
-    }
-    image_gainmap.src = gainmap_json.gainmap_url;
+    loadGainImage(gainmap_json.gainmap_url);
   }
   if (`alternate_url` in gainmap_json) {
-    image_alternate = new Image();
-    image_alternate.onload = function() {
-      alternate_size[0] = image_alternate.width;
-      alternate_size[1] = image_alternate.height;
-      alternate_texture = createTexture(alternate_size, image_alternate);
-      if (base_texture && alternate_texture)
-        onImagesLoaded();
-    }
-    image_alternate.src = gainmap_json.alternate_url;
+    loadAltrImage(gainmap_json.alternate_url);
   }
 
   GainMapMetadata_UseBaseImageColorSpace.checked = gainmap_json.use_base_colour_space;
@@ -693,9 +711,6 @@ let onGainmapJsonLoaded = function(gainmap_json) {
 
   if (gainmap_json.channels.length == 3) {
     GainMapMetadata_MultiChannel.checked = true;
-    GainMapMetadata_Channel1.hidden = false;
-    GainMapMetadata_Channel2.hidden = false;
-
     GainMapMetadata_Channel1_GainMapMin.value      = gainmap_json.channels[1].gain_map_min;
     GainMapMetadata_Channel1_GainMapMax.value      = gainmap_json.channels[1].gain_map_max;
     GainMapMetadata_Channel1_Gamma.value           = gainmap_json.channels[1].gamma;
@@ -709,9 +724,9 @@ let onGainmapJsonLoaded = function(gainmap_json) {
     GainMapMetadata_Channel2_AlternateOffset.value = gainmap_json.channels[2].alternate_offset;
   } else {
     GainMapMetadata_MultiChannel.checked = false;
-    GainMapMetadata_Channel1.hidden = true;
-    GainMapMetadata_Channel2.hidden = true;
   }
+  GainMapMetadata_Channel1.hidden = !GainMapMetadata_MultiChannel.checked;
+  GainMapMetadata_Channel2.hidden = !GainMapMetadata_MultiChannel.checked;
 
   GainMapMetadata_BasePrimaries.value = gainmap_json.base_primaries;
   GainMapMetadata_BaseTransfer.value = gainmap_json.base_transfer;
@@ -722,8 +737,8 @@ let onGainmapJsonLoaded = function(gainmap_json) {
 
 let loadGainmap = function(gainmap_json_url) {
   base_texture = null;
-  gain_map_texture = null;
-  alternate_texture = null;
+  gain_texture = null;
+  altr_texture = null;
 
   fetch(gainmap_json_url)
   .then(res => res.json())
@@ -750,6 +765,9 @@ function onBackgroundGainSliderChanged() {
 }
 
 let onChange = function() {
+  GainMapMetadata_Channel1.hidden = !GainMapMetadata_MultiChannel.checked;
+  GainMapMetadata_Channel2.hidden = !GainMapMetadata_MultiChannel.checked;
+
   draw();
 }
 
@@ -818,8 +836,48 @@ function main() {
   ButtonSave.addEventListener('click', saveCanvas);
 
   ButtonComputeGainmap.addEventListener('click', computeGainmap);
-  ButtonComputeAlternate.addEventListener('click', computeAlternate);
-  ButtonSwapBaseAndAlternate.addEventListener('click', swapBaseAndAlternate);
+  ButtonComputeAltr.addEventListener('click', computeAlternate);
+  ButtonSwapBaseAndAltr.addEventListener('click', swapBaseAndAlternate);
+
+  let loadImage = function(fileList, fn) {
+    let reader = new FileReader();
+    reader.onloadend = function() {
+      let url = reader.result;
+      fn(url);
+    }
+    reader.readAsDataURL(fileList[0]);
+  }
+
+  ButtonUploadBaseFake.addEventListener('click', function() { ButtonUploadBase.click(); });
+  ButtonUploadBaseFake.addEventListener('dragover', function (e) { e.preventDefault(); });
+  ButtonUploadAltrFake.addEventListener('click', function() { ButtonUploadAltr.click(); });
+  ButtonUploadAltrFake.addEventListener('dragover', function (e) { e.preventDefault(); });
+  ButtonUploadGainFake.addEventListener('click', function() { ButtonUploadGain.click(); });
+  ButtonUploadGainFake.addEventListener('dragover', function (e) { e.preventDefault(); });
+
+  ButtonUploadBaseFake.addEventListener('drop', function (e) {
+    e.preventDefault();
+    loadImage(e.dataTransfer.files, loadBaseImage);
+  });
+  ButtonUploadBase.addEventListener('change', function(e) {
+    loadImage(ButtonUploadBase.files, loadBaseImage);
+  });
+
+  ButtonUploadAltrFake.addEventListener('drop', function (e) {
+    e.preventDefault();
+    loadImage(e.dataTransfer.files, loadAltrImage);
+  });
+  ButtonUploadAltr.addEventListener('change', function(e) {
+    loadImage(ButtonUploadAltr.files, loadAltrImage);
+  });
+
+  ButtonUploadGainFake.addEventListener('drop', function (e) {
+    e.preventDefault();
+    loadImage(e.dataTransfer.files, loadGainImage);
+  });
+  ButtonUploadGain.addEventListener('change', function(e) {
+    loadImage(ButtonUploadGain.files, loadGainImage);
+  });
 }
 
 </script>
@@ -910,9 +968,17 @@ Images are from Eric Chan's HDR <a href="https://people.csail.mit.edu/ericchan/h
 <h3>Gainmap image properties</h3>
 
 <p>
-<button type="button" id="ButtonComputeGainmap">Recompute gainmap</button>
-<button type="button" id="ButtonComputeAlternate">Compute alternate</button>
-<button type="button" id="ButtonSwapBaseAndAlternate">Swap base and alternate</button>
+<input  type="file"   id="ButtonUploadBase" style="display:none">
+<button type="button" id="ButtonUploadBaseFake">Upload base</button>
+<input  type="file"   id="ButtonUploadAltr" style="display:none">
+<button type="button" id="ButtonUploadAltrFake">Upload alternate</button>
+<input  type="file"   id="ButtonUploadGain" style="display:none">
+<button type="button" id="ButtonUploadGainFake">Upload gainmap</button>
+</p>
+<p>
+<button type="button" id="ButtonSwapBaseAndAltr">Swap base and alternate</button>
+<button type="button" id="ButtonComputeAltr">Compute alternate</button>
+<button type="button" id="ButtonComputeGainmap">Compute gainmap</button>
 </p>
 
 <p>
@@ -1001,7 +1067,7 @@ Images are from Eric Chan's HDR <a href="https://people.csail.mit.edu/ericchan/h
 
 <td style="width:20px;"></td>
 
-<td id="GainMapMetadata_Channel1">
+<td id="GainMapMetadata_Channel1" hidden>
   <span style="width:120px;display:inline-block;">
     <label for="GainMapMetadata_Channel1_GainMapMin">Gain Map Min</label>:
   </span>
@@ -1033,7 +1099,7 @@ Images are from Eric Chan's HDR <a href="https://people.csail.mit.edu/ericchan/h
 
 <td style="width:20px;"></td>
 
-<td id="GainMapMetadata_Channel2">
+<td id="GainMapMetadata_Channel2" hidden>
   <span style="width:120px;display:inline-block;">
     <label for="GainMapMetadata_Channel2_GainMapMin">Gain Map Min</label>:
   </span>

@@ -1,15 +1,5 @@
 <html>
 <head>
-<style>
-#DropArea {
-  border: 2px dashed #ccc;
-  border-radius: 20px;
-  padding: 10px;
-}
-#DropArea.highlight {
-  border-color: purple;
-}
-</style>
 <script>
 var canvas;
 var gl;
@@ -626,58 +616,34 @@ const fs = `
     return c;
   }
 
-  vec3 computeGain(vec3 tonemap_input) {
+  float toneMapGain(float x) {
     if (tonemap_mode == kToneMapReinhard) {
-      return vec3(toneMapGainReinhard(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-                  toneMapGainReinhard(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-                  toneMapGainReinhard(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-    }
-    else if (tonemap_mode == kToneMapBT2408) {
+      return toneMapGainReinhard(x, clli_max_nits, ndwl_white_nits);
+    } else if (tonemap_mode == kToneMapBT2408) {
       // ITU-R BT.2408.
-      return vec3(toneMapGainBT2408(tonemap_input.r, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-                  toneMapGainBT2408(tonemap_input.g, 0.0, clli_max_nits, 0.0, ndwl_white_nits),
-                  toneMapGainBT2408(tonemap_input.b, 0.0, clli_max_nits, 0.0, ndwl_white_nits));
-    }
-    else if (tonemap_mode == kToneMapBT2446A) {
+      return toneMapGainBT2408(x, 0.0, clli_max_nits, 0.0, ndwl_white_nits);
+    } else if (tonemap_mode == kToneMapBT2446A) {
       // ITU-R BT.2446 Method A.
-      return vec3(toneMapGainBT2446a(tonemap_input.r, clli_max_nits, ndwl_white_nits),
-                  toneMapGainBT2446a(tonemap_input.g, clli_max_nits, ndwl_white_nits),
-                  toneMapGainBT2446a(tonemap_input.b, clli_max_nits, ndwl_white_nits));
-    }
-    else if (tonemap_mode == kToneMapBT2446C) {
+      return toneMapGainBT2446a(x, clli_max_nits, ndwl_white_nits);
+    } else if (tonemap_mode == kToneMapBT2446C) {
       // ITU-R BT.2446 Method C.
-      return vec3(toneMapGainBT2446c(tonemap_input.r),
-                  toneMapGainBT2446c(tonemap_input.g),
-                  toneMapGainBT2446c(tonemap_input.b));
+      return toneMapGainBT2446c(x);
     }
-    return vec3(0.0);
+    return 0.0;
   }
 
-  void main() {
-    // Treat everything as opaque. Just write RGB from here on.
-    gl_FragColor.a = 1.0;
+  vec3 computeGain(vec3 tonemap_input) {
+    return vec3(toneMapGain(tonemap_input.r),
+                toneMapGain(tonemap_input.g),
+                toneMapGain(tonemap_input.b));
+  }
 
-    vec3 c = readTextureAsRec2100Nits();
-
-    // Convert to Rec2100 PQ and HLG signal (this is un-doing one of the above functions).
-    vec3 c_rec2100pq = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
-    vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
-
+  vec3 toneMapRec2100NitsToRec2020Linear(vec3 c) {
     // Clamp to the indicated maximum
     c = min(c, clli_max_nits);
 
     if (tonemap_mode == kToneMapNone) {
       c /= ndwl_white_nits;
-    }
-    else if (tonemap_mode == kToneMapNativePQ) {
-      // For Native PQ, just write the value and return.
-      gl_FragColor.rgb = c_rec2100pq;
-      return;
-    }
-    else if (tonemap_mode == kToneMapNativeHLG) {
-      // For Native HLG, just write the value and return.
-      gl_FragColor.rgb = c_rec2100hlg;
-      return;
     }
     else if (tonemap_mode == kToneMapClamp) {
       c /= ndwl_white_nits;
@@ -695,6 +661,7 @@ const fs = `
       c *= pow(Y, hlg_ootf_gamma - 1.0);
     }
     else if (tonemap_mode == kToneMapHLGAs22) {
+      vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
       c = pow(c_rec2100hlg, vec3(2.2, 2.2, 2.2));
     }
     else if (tonemap_mode == kToneMapBT2446A_redo) {
@@ -730,6 +697,33 @@ const fs = `
 
     // Perform SDR gamut mapping.
     c = gamutMap(c, final_gamut_mode, final_gamut);
+
+    return c;
+  }
+
+  void main() {
+    // Treat everything as opaque. Just write RGB from here on.
+    gl_FragColor.a = 1.0;
+
+    vec3 c = readTextureAsRec2100Nits();
+
+    // Clamp to the indicated maximum
+    c = min(c, clli_max_nits);
+
+    if (tonemap_mode == kToneMapNativePQ) {
+      // For Native PQ, just write the value and return.
+      vec3 c_rec2100pq = vec3(pqNitsToSignal(c.r), pqNitsToSignal(c.g), pqNitsToSignal(c.b));
+      gl_FragColor.rgb = c_rec2100pq;
+      return;
+    }
+    if (tonemap_mode == kToneMapNativeHLG) {
+      // For Native HLG, just write the value and return.
+      vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
+      gl_FragColor.rgb = c_rec2100hlg;
+      return;
+    }
+
+    c = toneMapRec2100NitsToRec2020Linear(c);
 
     // Convert from rec2020 to P3.
     c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
@@ -1062,6 +1056,14 @@ let initializeGL = function() {
   program = compileShader(gl, vs, fs);
 }
 
+let resizeCanvasStyle = function() {
+  let full_height = window.innerHeight;
+  let header_bottom = Header.getBoundingClientRect().bottom;
+  let max_height = Math.max(full_height - header_bottom - 40, 100);
+  console.log();
+  Canvas.style = 'max-width:95%; max-height:' + max_height + 'px;';
+}
+
 let drawImage = function(image, w = 0, h = 0) {
   createTexture(image, w, h);
   computeImageMaxRGB();
@@ -1070,13 +1072,35 @@ let drawImage = function(image, w = 0, h = 0) {
   viewport_h = texture_h;
   canvas.width = viewport_w;
   canvas.height = viewport_h;
-  canvas.style = 'max-width:100%; max-height:85vh;';
+  resizeCanvasStyle();
   gl.viewport(0, 0, viewport_w, viewport_h);
   draw();
 }
 
 let loadImage = function(url) {
   texture = null;
+
+  if (0) {
+    const kGridSize = 33;
+    texture_w = kGridSize * kGridSize;
+    texture_h = kGridSize;
+
+    let data = new Float32Array(4 * kGridSize * kGridSize * kGridSize);
+    let index = 0;
+    for (let r = 0; r < kGridSize; ++r) {
+      for (let g = 0; g < kGridSize; ++g) {
+        for (let b = 0; b < kGridSize; ++b) {
+          data[index + 0] = r / (kGridSize - 1);
+          data[index + 1] = g / (kGridSize - 1);
+          data[index + 2] = b / (kGridSize - 1);
+          data[index + 3] = 1.0;
+          index += 4;
+        }
+      }
+    }
+    drawImage(data, kGridSize * kGridSize, kGridSize);
+    return;
+  }
 
   let image = new Image();
   image.onload = function() {
@@ -1159,11 +1183,11 @@ function allowDrop(ev) {
   ev.preventDefault();
 }
 
-function onDrop(event) {
+function onFileList(files) {
   event.preventDefault();
-  console.log(event.dataTransfer.files);
+  console.log(files);
   let image_file = null;
-  for (const file of event.dataTransfer.files) {
+  for (const file of files) {
     filename = file.name.split('.').slice(0, -1).join('.');
     console.log(filename);
     image_file = file;
@@ -1176,7 +1200,6 @@ function onDrop(event) {
   }
   reader.readAsDataURL(image_file)
 }
-
 
 function main() {
   initializeGL();
@@ -1284,12 +1307,24 @@ function main() {
     draw();
   });
 
-  DropArea.addEventListener('drop', function (evt) {
-    onDrop(evt);
+  UploadButton.addEventListener('change', function(e) {
+    onFileList(UploadButton.files);
   });
-  DropArea.addEventListener('dragover', function (evt) {
-    evt.preventDefault();
+  UploadButtonFake.addEventListener('click', function() {
+    UploadButton.click();
   });
+
+  DropArea.addEventListener('drop', function (e) {
+    e.preventDefault();
+    onFileList(e.dataTransfer.files);
+  });
+  DropArea.addEventListener('dragover', function (e) {
+    e.preventDefault();
+  });
+
+  window.onresize = function(event) {
+    resizeCanvasStyle();
+  };
 
   loadImage('staircase-pq.avif');
 }
@@ -1297,15 +1332,18 @@ function main() {
 </head>
 <body onload='main()'>
 
+<div id='Header'>
+
 <p id='Warnings' hidden=true></p>
 
 <table style="margin-left: auto; margin-right: auto;">
   <tr>
-    <td>
-      <div id="DropArea">
-      Drop HDR image here.
+    <td id="DropArea">
+      <p 'text-align:center;'>
+      <input  type="file"   id="UploadButton" style="display:none">
+      <button type="button" id="UploadButtonFake">Upload Image</button>
+      </p>
       <p id="VidContainer"><video style="width:200px;"id='Vid' hidden muted controls></video></p>
-      </div>
       <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
     </td>
 
@@ -1466,12 +1504,10 @@ function main() {
 </table>
 
 </div>
-
 <div id='Viewer' style='text-align:center;'>
-  <p><canvas id='Canvas' width='32' height='32'></canvas></p>
-</div>
 
-</div>
+<p><canvas id='Canvas' width='32' height='32'></canvas></p>
+
 </div>
 
 </body>
