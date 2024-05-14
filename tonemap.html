@@ -20,6 +20,8 @@ var save_requested = false;
 var saved_settings1 = {};
 var saved_settings2 = {};
 
+var size_mode = 0;
+
 let linearToSrgb = function (x) {
   let a = 1.1371188301409823;
   let c = 12.919999999992248;
@@ -124,6 +126,7 @@ const fs = `
   uniform float clli_max_nits;
   uniform float ndwl_white_nits;
   uniform float hlg_ootf_gamma;
+  uniform float hlg_scale;
   uniform int tonemap_mode;
   uniform int tonemap_weight_before;
   uniform float tonemap_weight_maxRGB;
@@ -659,6 +662,7 @@ const fs = `
       // Apply the specified gamma.
       float Y = rec2020_rgb_to_yuv(c).r;
       c *= pow(Y, hlg_ootf_gamma - 1.0);
+      c *= hlg_scale;
     }
     else if (tonemap_mode == kToneMapHLGAs22) {
       vec3 c_rec2100hlg = hlgOetf(hlgRefOotfInv(c));
@@ -769,7 +773,9 @@ let createTexture = function(image, w = 0, h = 0) {
 
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, texture_w, texture_h, 0, gl.RGBA, gl.FLOAT, image);
+  // gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, texture_w, texture_h, 0, gl.RGBA, gl.FLOAT, image);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, texture_w, texture_h, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texture_w, texture_h, gl.RGBA, gl.FLOAT, image);
   gl.generateMipmap(gl.TEXTURE_2D);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -843,6 +849,7 @@ let draw = function() {
   gl.uniform1f(gl.getUniformLocation(program, 'ndwl_white_nits'), NDWLWhiteNits.value);
   gl.uniform1f(gl.getUniformLocation(program, 'clli_max_nits'), CLLIMaxNits.value);
   gl.uniform1f(gl.getUniformLocation(program, 'hlg_ootf_gamma'), hlg_ootf_gamma);
+  gl.uniform1f(gl.getUniformLocation(program, 'hlg_scale'), HLG_Scale.value);
 
   gl.uniform1i(gl.getUniformLocation(program, 'tonemap_weight_before'), ToneMapCurveBefore.checked);
   gl.uniform1f(gl.getUniformLocation(program, 'tonemap_weight_maxRGB'), ToneMapCurveMaxRGB.value);
@@ -1059,6 +1066,9 @@ let initializeGL = function() {
 let resizeCanvasStyle = function() {
   let full_height = window.innerHeight;
   let header_bottom = Header.getBoundingClientRect().bottom;
+  if (size_mode == 1) {
+    header_bottom = 0;
+  }
   let max_height = Math.max(full_height - header_bottom - 40, 100);
   console.log();
   Canvas.style = 'max-width:95%; max-height:' + max_height + 'px;';
@@ -1122,7 +1132,7 @@ let loadImage = function(url) {
       let cb = function(now, metadata) {
         video.hidden = false;
         if (1) {
-          drawImage(video, metadata.width, metadata.height);
+          drawImage(video, Vid.videoWidth, Vid.videoHeight);
         } else {
           createImageBitmap(video, {colorSpaceConversion:"none"}).then((image) => {
             onChange();
@@ -1263,6 +1273,7 @@ function main() {
         e.checked = value;
       }
     }
+    onChange();
     draw();
   }
   let saveSettings = function() {
@@ -1276,6 +1287,9 @@ function main() {
       'FinalGamutMap': FinalGamutMap.value,
       'FinalGamut': FinalGamut.value,
       'HLG_Lw_Nits': HLG_Lw_Nits.value,
+      'HLG_Scale': HLG_Scale.value,
+      'RadioHLG_OOTF_f2': RadioHLG_OOTF_f2.checked,
+      'RadioHLG_OOTF_5f': RadioHLG_OOTF_5f.checked,
     };
   }
 
@@ -1326,6 +1340,11 @@ function main() {
     resizeCanvasStyle();
   };
 
+  Canvas.addEventListener('click', function() {
+    size_mode = !size_mode;
+    resizeCanvasStyle();
+  });
+
   loadImage('staircase-pq.avif');
 }
 </script>
@@ -1343,7 +1362,7 @@ function main() {
       <input  type="file"   id="UploadButton" style="display:none">
       <button type="button" id="UploadButtonFake">Upload Image</button>
       </p>
-      <p id="VidContainer"><video style="width:200px;"id='Vid' hidden muted controls></video></p>
+      <p id="VidContainer"><video style="max-width:200px; max-height:100px;"id='Vid' hidden muted controls></video></p>
       <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
     </td>
 
@@ -1482,7 +1501,7 @@ function main() {
     </div>
 
     <div id="ParamsBT2100HLG">
-    <p id="HLG_OOTF_Gamma"> ITU-R BT.2100<br>HLG Gamma: (unknown) </p>
+    <p id="HLG_OOTF_Gamma">HLG Gamma: (unknown) </p>
     <table>
       <tr>
         <td>
@@ -1497,6 +1516,10 @@ function main() {
           <label for="RadioHLG_OOTF_5f">Note 5f</label>
         </td>
       </tr>
+      <tr><td>
+          <label for="HLG_Scale">Scale</label><br>
+          <input id="HLG_Scale" type="number" min="0.01" max="10" value="1" onchange='onChange();'/>
+      </td></tr>
     </table>
     </div>
   </td>
