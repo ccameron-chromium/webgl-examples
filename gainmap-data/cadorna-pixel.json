@@ -1,0 +1,20 @@
+{
+      "base_url":"gainmap-data/cadorna-pixel-ultrahdr.jpg",
+      "gainmap_url":"gainmap-data/cadorna-pixel-gainmap.jpg",
+      "base_primaries":1,
+      "base_transfer":13,
+      "alternate_primaries":9,
+      "alternate_transfer":16,
+      "use_base_colour_space":true,
+      "base_hdr_headroom":0,
+      "alternate_hdr_headroom":2.845570,
+      "channels":[
+        {
+          "gain_map_min":0,
+          "gain_map_max":2.845570,
+          "gamma":1,
+          "base_offset":0,
+          "alternate_offset":0
+        }
+      ]
+    }
