@@ -22,6 +22,16 @@ var saved_settings2 = {};
 
 var size_mode = 0;
 
+let clamp = function(x, a, b) {
+  return Math.min(Math.max(x, a), b);
+}
+let log2 = function(x) { return Math.log(x) / Math.log(2); }
+let exp2 = function(x) { return Math.exp(x * Math.log(2)); }
+let mix = function(x, y, amount) {
+  amount = clamp(amount, 0, 1);
+  return (1-amount)*x + (amount)*y;
+}
+
 let linearToSrgb = function (x) {
   let a = 1.1371188301409823;
   let c = 12.919999999992248;
@@ -42,6 +52,9 @@ let pqSignalToNits = function(v) {
   const p = Math.pow(Math.min(Math.max(v, 0.0), 1.0), 1.0 / m2);
   return 10000.0 * Math.pow(Math.max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
 }
+
+const kAdaptationModeSpecific = 0;
+const kAdaptationModeGainmap = 1;
 
 const kGamutMapNone = 0;
 const kGamutMapMark = 1;
@@ -71,13 +84,18 @@ const ToneMapInputMix = 3;
 const kTransferSRGB = 0;
 const kTransferHLG = 1;
 const kTransferPQ = 2;
+const kTransferG22_AsHLG = 5;
 const kTransferPQ_G = 3;
+const kTransferG22 = 4;
 
 const kGamutSRGB = 0;
 const kGamutP3 = 1;
 const kGamutRec2020 = 2;
 
 const fs_constants = `
+  int kAdaptationModeSpecific = 0;
+  int kAdaptationModeGainmap = 1;
+
   int kGamutMapNone = 0;
   int kGamutMapMark = 1;
   int kGamutMapClamp = 2;
@@ -106,7 +124,9 @@ const fs_constants = `
   int kTransferSRGB = 0;
   int kTransferHLG = 1;
   int kTransferPQ = 2;
+  int kTransferG22_AsHLG = 5;
   int kTransferPQ_G = 3;
+  int kTransferG22 = 4;
 
   int kGamutSRGB = 0;
   int kGamutP3 = 1;
@@ -123,10 +143,13 @@ const vs = `attribute vec2 position;
 const fs = `
   precision highp float;
   uniform sampler2D texture;
+  uniform float raise_gamma;
   uniform float clli_max_nits;
   uniform float ndwl_white_nits;
   uniform float hlg_ootf_gamma;
   uniform float hlg_scale;
+  uniform int hlg_ootf_per_channel;
+  uniform int adaptation_mode;
   uniform int tonemap_mode;
   uniform int tonemap_weight_before;
   uniform float tonemap_weight_maxRGB;
@@ -138,6 +161,7 @@ const fs = `
   uniform int signal_transfer;
   uniform int signal_primaries;
   uniform int use_bgr;
+  uniform float target_headroom_log2;
   varying vec2 texcoord;
 
   ` + fs_constants + `
@@ -179,6 +203,40 @@ const fs = `
   mat3 oklab_to_lms = mat3( 1.00000000,  1.00000001,  1.00000005,
                             0.39633779, -0.10556134, -0.08948418,
                             0.21580376, -0.06385417, -1.29148554);
+
+  // Given a coordinate x, return the coordinate y such that (x,y) is on the
+  // Bezier curve defined by control points p0,p1,s2 that satisfy
+  // satisfy p0.x < p1.x < p2.x, and p0.y < p1.y = p2.y
+  float bezier_y_of_x(float x, vec2 p0, vec2 p1, vec2 p2) {
+    if (x <= p0.x) {
+      return p0.y;
+    }
+    if (x >= p2.x) {
+      return p2.y;
+    }
+
+    // Compute the coefficients so that the Bezier curve is
+    //     B2D(t) = (a_x * t*t + b_x * t + c_x,
+    //               a_y * t*t + b_y * t + c_y)
+    float a_x = p0.x - 2.0*p1.x + p2.x;
+    float b_x = 2.0*p1.x - 2.0*p2.x;
+    float c_x = p2.x;
+    float a_y = p0.y - 2.0*p1.y + p2.y;
+    float b_y = 2.0*p1.y - 2.0*p2.y;
+    float c_y = p2.y;
+
+    // Using three steps of Halleys' method, solve for t:
+    //     a_x*t*t + b_x*t + c_x = x
+    float t = 0.0;
+    float f2 = 2.0*a_x;
+    for (int i = 0; i < 3; ++i) {
+      float f1 = 2.0*a_x*t + b_x;
+      float f0 = a_x*t*t + b_x*t + (c_x-x);
+      t -= 2.0*f0*f1 / (2.0*f1*f1 - f0*f2);
+    }
+
+    return (a_y*t*t + b_y*t + c_y);
+  }
 
   // Y_rec2020 is the luminance vector in rec2020 primaries.
   vec3 rec2020_rgb_to_yuv(vec3 rgb) {
@@ -287,6 +345,7 @@ const fs = `
     }
     return 1.0;
   }
+
 
   // Content is in [Lb, Lw]
   // Display is [Lmin, Lmax]
@@ -504,10 +563,14 @@ const fs = `
     return c;
   }
 
+  bool inCube(vec3 c, float H, float epsilon) {
+    return c.r >= -epsilon && c.r <= H + epsilon &&
+           c.g >= -epsilon && c.g <= H + epsilon &&
+           c.b >= -epsilon && c.b <= H + epsilon;
+  }
+
   bool inUnitCube(vec3 c, float epsilon) {
-    return c.r >= -epsilon && c.r <= 1.0 + epsilon &&
-           c.g >= -epsilon && c.g <= 1.0 + epsilon &&
-           c.b >= -epsilon && c.b <= 1.0 + epsilon;
+    return inCube(c, 1.0, epsilon);
   }
 
   vec3 gamutMapOkLabConstantH(vec3 c, int gamut) {
@@ -543,10 +606,10 @@ const fs = `
     c = convert(c, kGamutRec2020, gamut);
 
     if (mode == kGamutMapClamp) {
-      c = clamp(c, 0.0, 1.0);
+      c = clamp(c, 0.0, exp2(target_headroom_log2));
     }
     if (mode == kGamutMapMark) {
-      if (!inUnitCube(c, 1.0 / 255.0)) {
+      if (!inCube(c, exp2(target_headroom_log2), 1.0 / 255.0)) {
         c = vec3(1.0, 0.0, 0.0);
       }
     }
@@ -590,6 +653,13 @@ const fs = `
       c = srgbToLinear(c);
       c = ndwl_white_nits * c;
     }
+    if (signal_transfer == kTransferG22_AsHLG) {
+      c = pow(c, vec3(2.2));
+    }
+    if (signal_transfer == kTransferG22) {
+      c = pow(c, vec3(2.2));
+      c = ndwl_white_nits * c;
+    }
     if (signal_transfer == kTransferPQ) {
       c = vec3(pqSignalToNits(c.r), pqSignalToNits(c.g), pqSignalToNits(c.b));
     }
@@ -611,8 +681,14 @@ const fs = `
       c = xyzd50_to_rec2020 * p3_to_xyzd50 * c;
     }
 
+    if (signal_transfer == kTransferG22_AsHLG) {
+      c = hlgOetf(c);
+      c = vec3(hlgOetfInv(c.r), hlgOetfInv(c.g), hlgOetfInv(c.b));
+    }
+
     // Apply the HLG OOTF (and scale up) in rec2020.
-    if (signal_transfer == kTransferHLG) {
+    if (signal_transfer == kTransferHLG ||
+        signal_transfer == kTransferG22_AsHLG) {
       c = hlgRefOotf(c);
     }
 
@@ -621,10 +697,24 @@ const fs = `
 
   float toneMapGain(float x) {
     if (tonemap_mode == kToneMapReinhard) {
-      return toneMapGainReinhard(x, clli_max_nits, ndwl_white_nits);
+      if (adaptation_mode == kAdaptationModeGainmap) {
+        return toneMapGainReinhard(x, clli_max_nits, ndwl_white_nits);
+      }
+      if (adaptation_mode == kAdaptationModeSpecific) {
+        return toneMapGainReinhard(x, clli_max_nits, ndwl_white_nits * exp2(target_headroom_log2));
+      }
     } else if (tonemap_mode == kToneMapBT2408) {
       // ITU-R BT.2408.
-      return toneMapGainBT2408(x, 0.0, clli_max_nits, 0.0, ndwl_white_nits);
+      if (adaptation_mode == kAdaptationModeGainmap) {
+        return toneMapGainBT2408(x, 0.0, clli_max_nits, 0.0, ndwl_white_nits);
+      }
+      if (adaptation_mode == kAdaptationModeSpecific) {
+        float target_nits = ndwl_white_nits * exp2(target_headroom_log2);
+        if (target_nits > clli_max_nits) {
+          return 1.0;
+        }
+        return toneMapGainBT2408(x, 0.0, clli_max_nits, 0.0, target_nits);
+      }
     } else if (tonemap_mode == kToneMapBT2446A) {
       // ITU-R BT.2446 Method A.
       return toneMapGainBT2446a(x, clli_max_nits, ndwl_white_nits);
@@ -647,6 +737,9 @@ const fs = `
 
     if (tonemap_mode == kToneMapNone) {
       c /= ndwl_white_nits;
+
+      float Y = rec2020_rgb_to_yuv(c).r;
+      c *= pow(Y, raise_gamma - 1.0);
     }
     else if (tonemap_mode == kToneMapClamp) {
       c /= ndwl_white_nits;
@@ -660,8 +753,12 @@ const fs = `
       c = hlgRefOotfInv(c);
 
       // Apply the specified gamma.
-      float Y = rec2020_rgb_to_yuv(c).r;
-      c *= pow(Y, hlg_ootf_gamma - 1.0);
+      if (hlg_ootf_per_channel == 1) {
+        c *= pow(c, vec3(hlg_ootf_gamma - 1.0));
+      } else {
+        float Y = rec2020_rgb_to_yuv(c).r;
+        c *= pow(Y, hlg_ootf_gamma - 1.0);
+      }
       c *= hlg_scale;
     }
     else if (tonemap_mode == kToneMapHLGAs22) {
@@ -727,7 +824,24 @@ const fs = `
       return;
     }
 
-    c = toneMapRec2100NitsToRec2020Linear(c);
+    vec3 c_linear = c / ndwl_white_nits;
+
+    vec3 c_sdr = toneMapRec2100NitsToRec2020Linear(c);
+
+    if (adaptation_mode == kAdaptationModeSpecific) {
+      c = c_sdr;
+    }
+    if (adaptation_mode == kAdaptationModeGainmap) {
+      if (target_headroom_log2 != 0.0) {
+        float hdr_headroom = log2(clli_max_nits / ndwl_white_nits);
+        float w = clamp(target_headroom_log2 / hdr_headroom, 0.0, 1.0);
+        vec3 eps = vec3(0.0001);
+        vec3 g = log2((c_linear + eps) / (c_sdr + eps));
+        c = c_sdr * exp2(g * w);
+      } else {
+        c = c_sdr;
+      }
+    }
 
     // Convert from rec2020 to P3.
     c = xyzd50_to_p3 * rec2020_to_xyzd50 * c;
@@ -848,8 +962,17 @@ let draw = function() {
 
   gl.uniform1f(gl.getUniformLocation(program, 'ndwl_white_nits'), NDWLWhiteNits.value);
   gl.uniform1f(gl.getUniformLocation(program, 'clli_max_nits'), CLLIMaxNits.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'target_headroom_log2'), TargetHeadroomSlider.value);
+
+  TargetHeadroomSliderLabel.innerText = (TargetHeadroomSlider.value * 1.0).toFixed(2);
+  TargetHeadroomSliderLinear.innerText = exp2(TargetHeadroomSlider.value).toFixed(2);
+  CLLILinear.innerText = (CLLIMaxNits.value / NDWLWhiteNits.value).toFixed(2);
+  CLLILog2.innerText = log2(CLLIMaxNits.value / NDWLWhiteNits.value).toFixed(2);
+
   gl.uniform1f(gl.getUniformLocation(program, 'hlg_ootf_gamma'), hlg_ootf_gamma);
   gl.uniform1f(gl.getUniformLocation(program, 'hlg_scale'), HLG_Scale.value);
+  gl.uniform1i(gl.getUniformLocation(program, 'hlg_ootf_per_channel'), HLG_PerChannel.checked);
+  gl.uniform1f(gl.getUniformLocation(program, 'raise_gamma'), RaiseGamma.value);
 
   gl.uniform1i(gl.getUniformLocation(program, 'tonemap_weight_before'), ToneMapCurveBefore.checked);
   gl.uniform1f(gl.getUniformLocation(program, 'tonemap_weight_maxRGB'), ToneMapCurveMaxRGB.value);
@@ -905,6 +1028,13 @@ let draw = function() {
     default:
       gl.uniform1i(gl.getUniformLocation(program, 'tonemap_mode'), -1);
       break;
+  }
+
+  if (AdaptationModeSpecific.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'adaptation_mode'), kAdaptationModeSpecific);
+  }
+  if (AdaptationModeGainmap.checked) {
+    gl.uniform1i(gl.getUniformLocation(program, 'adaptation_mode'), kAdaptationModeGainmap);
   }
 
   ParamsToneMapCurve.hidden = !use_tonemap_curve;
@@ -983,11 +1113,17 @@ let draw = function() {
   }
 
   switch (SignalTransfer.value) {
+    case 'g22':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferG22);
+      break;
     case 'srgb':
       gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferSRGB);
       break;
     case 'pq':
       gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferPQ);
+      break;
+    case '22-hlg':
+      gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferG22_AsHLG);
       break;
     case 'hlg':
       gl.uniform1i(gl.getUniformLocation(program, 'signal_transfer'), kTransferHLG);
@@ -1050,6 +1186,7 @@ let initializeGL = function() {
   }
   if (!(`configureHighDynamicRange` in canvas)) {
     warningsText += '<br>Experimental HDR Canvas API not found (configureHighDyanmicRange)!'
+    FinalGamutMap.value = 'Mark';
   }
 
   if (warningsText != '') {
@@ -1070,7 +1207,6 @@ let resizeCanvasStyle = function() {
     header_bottom = 0;
   }
   let max_height = Math.max(full_height - header_bottom - 40, 100);
-  console.log();
   Canvas.style = 'max-width:95%; max-height:' + max_height + 'px;';
 }
 
@@ -1164,6 +1300,7 @@ let loadImage = function(url) {
 }
 
 let onChange = function() {
+  document.body.style.background = Background.value;
   let recomputeHlgOotfGamma = function() {
     if (RadioHLG_OOTF_f2.checked) {
       hlg_ootf_gamma = 1.2 * Math.pow(1.111, Math.log(HLG_Lw_Nits.value / 1000.0) / Math.log(2.0));
@@ -1171,9 +1308,10 @@ let onChange = function() {
     if (RadioHLG_OOTF_5f.checked) {
       hlg_ootf_gamma = 1.2 + 0.42 * Math.log(HLG_Lw_Nits.value / 1000.0) / Math.log(10.0);
     }
-    HLG_OOTF_Gamma.innerHTML = 'ITU-R BT.2100<br>HLG Gamma: ' + hlg_ootf_gamma.toFixed(4);
+    HLG_OOTF_Gamma.innerHTML = 'OOTF Gamma: ' + hlg_ootf_gamma.toFixed(4);
   }
   recomputeHlgOotfGamma();
+
 
   if (SignalTransfer.value == 'hlg') {
     CLLIMaxNits.value = 1000;
@@ -1227,37 +1365,13 @@ function main() {
         'FinalGamutMap':'None',
         'FinalGamut':'rec2020'})});
 
-  // Chromium.
+  // Reinhard maxRGB
   ButtonPresetReinhardMaxRGB.addEventListener('click', function() {
     restoreSettings({
         'ToneMap':'Reinhard',
         'ToneMapCurveBefore':true,
         'ToneMapCurveMaxRGB':1.0,
         'ToneMapCurveRpGpBp':0.0,
-        'ToneMapCurveYRGB':0.0,
-        'GamutMap':'Clamp',
-        'FinalGamutMap':'None',
-        'FinalGamut':'rec2020'})});
-
-  // Eric Chan suggestion.
-  ButtonPresetReinhard6040PostMix.addEventListener('click', function() {
-    restoreSettings({
-        'ToneMap':'Reinhard',
-        'ToneMapCurveBefore':false,
-        'ToneMapCurveMaxRGB':0.6,
-        'ToneMapCurveRpGpBp':0.4,
-        'ToneMapCurveYRGB':0.0,
-        'GamutMap':'Clamp',
-        'FinalGamutMap':'None',
-        'FinalGamut':'rec2020'})});
-
-  // BT.2408 cause it deserves consideration (grumble).
-  ButtonPresetReinhard5050PreMix.addEventListener('click', function() {
-    restoreSettings({
-        'ToneMap':'Reinhard',
-        'ToneMapCurveBefore':true,
-        'ToneMapCurveMaxRGB':0.5,
-        'ToneMapCurveRpGpBp':0.5,
         'ToneMapCurveYRGB':0.0,
         'GamutMap':'Clamp',
         'FinalGamutMap':'None',
@@ -1288,6 +1402,8 @@ function main() {
       'FinalGamut': FinalGamut.value,
       'HLG_Lw_Nits': HLG_Lw_Nits.value,
       'HLG_Scale': HLG_Scale.value,
+      'HLG_PerChannel': HLG_PerChannel.value,
+      'RaiseGamma': RaiseGamma.value,
       'RadioHLG_OOTF_f2': RadioHLG_OOTF_f2.checked,
       'RadioHLG_OOTF_5f': RadioHLG_OOTF_5f.checked,
     };
@@ -1310,15 +1426,16 @@ function main() {
     restoreSettings(saved_settings2);
   });
 
+  TargetHeadroomSlider.addEventListener('input', onChange, false);
   CLLIMaxNits.addEventListener('input', function (evt) {
-    draw();
+    onChange();
   });
   NDWLWhiteNits.addEventListener('input', function (evt) {
-    draw();
+    onChange();
   });
 
   HLG_Lw_Nits.addEventListener('input', function (evt) {
-    draw();
+    onChange();
   });
 
   UploadButton.addEventListener('change', function(e) {
@@ -1349,105 +1466,84 @@ function main() {
 }
 </script>
 </head>
-<body onload='main()'>
 
-<div id='Header'>
+
+<body onload='main()'>
 
 <p id='Warnings' hidden=true></p>
 
-<table style="margin-left: auto; margin-right: auto;">
-  <tr>
-    <td id="DropArea">
-      <p 'text-align:center;'>
-      <input  type="file"   id="UploadButton" style="display:none">
-      <button type="button" id="UploadButtonFake">Upload Image</button>
-      </p>
-      <p id="VidContainer"><video style="max-width:200px; max-height:100px;"id='Vid' hidden muted controls></video></p>
-      <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
-    </td>
+<table style="width:100%">
+<tr>
+<td style="vertical-align:top; width:100px">
 
-    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+<div id="DropArea" style='text-align:center;'>
+  <p style='text-align:center;'>
+    <input  type="file"   id="UploadButton" style="display:none">
+    <button type="button" id="UploadButtonFake">Upload Image</button>
+  </p>
+  <p id="VidContainer"><video style="max-width:200px; max-height:100px;"id='Vid' hidden muted controls></video></p>
+  <p id='ImageMax'>Image maximum<br>Pixel value: (undefined)</p>
+</div>
 
-    <td>
-      <label for="SignalTransfer">Image transfer function:</label>
-      <select name="SignalTransfer" id="SignalTransfer" onchange='onChange();'>
-        <option value="srgb">sRGB</option>
-        <option value="pq" selected>PQ</option>
-        <option value="hlg">HLG</option>
-      </select>
+<p  style="text-align:center; width:300px;">
+  <p>Target headroom
+      <span id="TargetHeadroomSliderLabel" style="font-family:monospace;">???</span> (log2)
+      <span id="TargetHeadroomSliderLinear" style="font-family:monospace;">???</span> (linear)
+  </p>
+  <p><input id="TargetHeadroomSlider" type="range" min="0" max="5" step="0.1" value="0" list="tickmarks"" style="width:100%;"/></p>
+  <datalist id="tickmarks">
+    <option value="0" label="0"></option>
+    <option value="1" label="1"></option>
+    <option value="2" label="2"></option>
+    <option value="3" label="3"></option>
+    <option value="4" label="4"></option>
+  </datalist>
+</p>
 
-      <br>
-
-      <label for="SignalPrimaries">Image primaries:</label>
-      <select name="SignalPrimaries" id="SignalPrimaries" onchange='onChange();'>
-        <option value="srgb">sRGB</option>
-        <option value="p3">P3</option>
-        <option value="rec2020" selected>ITU-R BT.2020</option>
-      </select>
-
-      <br><br>
-
-      <label for="CLLIMaxNits">Image CLLI Max Luminance (nits)</label>
-      <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
-
-      <br>
-
-      <label for="NDWLWhiteNits">Image NDWL White Luminance (nits)</label>
-      <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
-
-    <br>
-
-    </td>
-
-    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
-
-    <td>
-      <p><button type="button" id="ButtonSave">Save Canvas</button></p>
-    </td>
-
-  </tr>
-</table>
-
-<!-- **** Tonemap parameters **** -->
 <hr>
 
-<table style="margin-left: auto; margin-right: auto;">
-  <tr>
-  <td style="text-align:center;">
-    <p>Presets:</p>
-        <button type="button" id="ButtonPresetHDR">HDR</button>
-        <button type="button" id="ButtonPresetReinhardMaxRGB">Reinhard maxRGB</button>
+<p>Presets:</p>
+<p>
+    <button type="button" id="ButtonPresetHDR">HDR</button>
+    <button type="button" id="ButtonPresetReinhardMaxRGB">Reinhard maxRGB</button>
     <br>
-        <button type="button" id="ButtonPresetReinhard6040PostMix">Reinhard 60/40 post-mix</button>
-        <button type="button" id="ButtonPresetReinhard5050PreMix">Reinhard 50/50 pre-mix</button>
+    <button type="button" id="ButtonPresetSave1">Save (1)</button>
+    <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
     <br>
-        <button type="button" id="ButtonPresetSave1">Save (1)</button>
-        <button type="button" id="ButtonPresetRestore1" disabled>Restore (1)</button>
-    <br>
-        <button type="button" id="ButtonPresetSave2">Save (2)</button>
-        <button type="button" id="ButtonPresetRestore2" disabled>Restore (2)</button>
-  </td>
+    <button type="button" id="ButtonPresetSave2">Save (2)</button>
+    <button type="button" id="ButtonPresetRestore2" disabled>Restore (2)</button>
+</p>
 
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+<hr>
 
-
-  <td style="">
+<p>
     <label for="ToneMap">Tone mapping:</label><br>
     <select name="ToneMap" id="ToneMap" onchange='onChange();'>
       <option value="None">Full HDR</option>
-      <option value="NativePQ">Native HDR10 tone mapping (to display)</option>
-      <option value="NativeHLG">Native HLG tone mapping (to display)</option>
       <option value="Clamp">Clamp to NDWL</option>
-      <option value="Reinhard">Reinhard (map CLLI max to NDWL)</option>
+      <option selected value="Reinhard">Reinhard (map CLLI max to NDWL)</option>
       <option value="BT2408">ITU-R BT.2408 Annex 5 (map CLLI max to NDWL)</option>
+      <hr>
       <option value="BT2446A">ITU-R BT.2446 Method A (map CLLI max to NDWL)</option>
       <option value="BT2446C">ITU-R BT.2446 Method C (hard-coded constants)</option>
       <option value="BT2100HLG">HLG rendered using ITU-R BT.2100 (with specified Lw)</option>
       <option value="HLGAs22">HLG reinterpreted as Gamma 2.2</option>
+      <option value="NativePQ">Native HDR10 tone mapping (to display)</option>
+      <option value="NativeHLG">Native HLG tone mapping (to display)</option>
     </select>
+</p>
 
-  <br><br>
+<p>
+    Adaptation: 
+    <input type="radio" id="AdaptationModeSpecific" onchange='onChange();' name="adaptation_mode" checked="true">
+    <label for="AdaptationModeSpecific">Specific</label>
 
+    <input type="radio" id="AdaptationModeGainmap" onchange='onChange();' name="adaptation_mode">
+    <label for="AdaptationModeGainmap">Gainmap</label>
+</p>
+
+
+<p>
     <label for="GamutMap">Tone mapping gamut map to Rec2020:</label><br>
     <select name="GamutMap" id="GamutMap" onchange='onChange();'>
       <option selected value="None">None (allow out-of-gamut values)</option>
@@ -1456,10 +1552,10 @@ function main() {
       <option value="ScaleUV">Scale chroma (UV) to gamut</option>
       <option value="RGB-L2">Min RGB L2</option>
     </select>
+</p>
 
 
-  <br><br>
-
+<p>
     <label for="FinalGamut">SDR gamut mapping:</label><br>
     <select name="FinalGamutMap" id="FinalGamutMap" onchange='onChange();'>
       <option selected value="None">None (allow out of gamut values)</option>
@@ -1475,38 +1571,21 @@ function main() {
       <option value="p3">P3</option>
       <option value="rec2020" selected>ITU-R BT.2020</option>
     </select>
-  </td>
+</p>
 
-  <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
-  <td style="width:300px; vertical-align:top;">
-    <div id="ParamsToneMapCurve">
+  <div id="ParamsBT2100HLG" hidden>
+    <hr>
 
-    <p>
-      <label for="ToneMapCurveBefore">Mix before applying curve</label>
-      <input id="ToneMapCurveBefore" type="checkbox" onchange='onChange();'/>
-    </p>
-
-    <p>
-      <input id="ToneMapCurveMaxRGB" type="number" step="0.01" min="0" max="1" value="0.6" onchange='onChange();'/>
-      maxRGB +
-      <br>
-      <input id="ToneMapCurveRpGpBp" type="number" step="0.01" min="0" max="1" value="0.6" onchange='onChange();'/>
-      R'G'B' +
-      <br>
-      <input id="ToneMapCurveYRGB"   type="number" step="0.01" min="0" max="1" value="0.0" onchange='onChange();'/>
-      YRGB
-    </p>
-
-    </div>
-
-    <div id="ParamsBT2100HLG">
     <p id="HLG_OOTF_Gamma">HLG Gamma: (unknown) </p>
     <table>
       <tr>
         <td>
           <label for="HLG_Lw_Nits">Lw (nits)</label><br>
           <input id="HLG_Lw_Nits" type="number" min="1" max="10000" value="100" onchange='onChange();'/>
+          <br>
+          <label for="HLG_Scale">Scale</label><br>
+          <input id="HLG_Scale" type="number" min="0.01" max="10" value="1" onchange='onChange();'/>
         </td>
         <td>
           <input type="radio" id="RadioHLG_OOTF_f2" onchange='onChange();' name="hlg_ootf_gamma" checked="true">
@@ -1514,24 +1593,97 @@ function main() {
           <br>
           <input type="radio" id="RadioHLG_OOTF_5f" onchange='onChange();' name="hlg_ootf_gamma">
           <label for="RadioHLG_OOTF_5f">Note 5f</label>
+          <br><br>
+          <input id="HLG_PerChannel" type="checkbox" onchange='onChange();'/>
+          <label for="HLG_PerChannel">Per-channel</label>
         </td>
       </tr>
-      <tr><td>
-          <label for="HLG_Scale">Scale</label><br>
-          <input id="HLG_Scale" type="number" min="0.01" max="10" value="1" onchange='onChange();'/>
-      </td></tr>
     </table>
-    </div>
-  </td>
-</tr>
-</table>
+  </div>
 
+  <div id="ParamsToneMapCurve">
+    <hr>
+    <p>
+      <label for="ToneMapCurveBefore">Mix before applying curve</label>
+      <input id="ToneMapCurveBefore" type="checkbox" onchange='onChange();'/>
+    </p>
+
+    <p>
+      <input id="ToneMapCurveMaxRGB" type="number" step="0.01" min="0" max="1" value="1.0" onchange='onChange();'/>
+      maxRGB +
+      <br>
+      <input id="ToneMapCurveRpGpBp" type="number" step="0.01" min="0" max="1" value="0.0" onchange='onChange();'/>
+      R'G'B' +
+      <br>
+      <input id="ToneMapCurveYRGB"   type="number" step="0.01" min="0" max="1" value="0.0" onchange='onChange();'/>
+      YRGB
+    </p>
+  </div>
+
+</td>
+<td style='text-align:center; vertical-align:top;'>
+
+<div id='Header'>
+<table style="margin-left:0px; margin-right: auto; ">
+  <tr>
+    <td style="vertical-align:top;">
+      <label for="SignalTransfer">Image transfer function:</label>
+      <select name="SignalTransfer" id="SignalTransfer" onchange='onChange();'>
+        <option value="srgb">sRGB</option>
+        <option value="pq" selected>PQ</option>
+        <option value="22-hlg">Gamma 2.2 HLG</option>
+        <option value="hlg">HLG</option>
+        <option value="g22">Gamma 2.2</option>
+      </select>
+
+      <br>
+
+      <label for="SignalPrimaries">Image primaries:</label>
+      <select name="SignalPrimaries" id="SignalPrimaries" onchange='onChange();'>
+        <option value="srgb">sRGB</option>
+        <option value="p3">P3</option>
+        <option value="rec2020" selected>ITU-R BT.2020</option>
+      </select>
+
+      <br><br>
+
+      <label for="CLLIMaxNits">Max luminance (nits)</label>
+      <input id="CLLIMaxNits" type="number" min="1" max="10000" value="1000"/>
+      <span id="CLLILog2" style="font-family:monospace;">???</span> (log2) 
+      <span id="CLLILinear" style="font-family:monospace;">???</span> (linear), 
+
+      <br>
+
+      <label for="NDWLWhiteNits">White luminance (nits)</label>
+      <input id="NDWLWhiteNits" type="number" min="1" max="10000" value="203" onchange='onChange();'/>
+    </td>
+
+    <!--
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+    -->
+
+    <td id="ParamsFull" style="vertical-align:top;" hidden>
+      <label for="RaiseGamma">Gamma</label><br>
+      <input id="RaiseGamma" type="number" min="0" max="3" value="1" step=0.01 onchange='onChange();'/>
+    </td>
+
+    <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
+
+    <td style="vertical-align:top;">
+      <p><button type="button" id="ButtonSave">Save Canvas</button></p>
+      <label for="Background">Background: </label>
+      <input id="Background" value="white" onchange='onChange();'/>
+    </td>
+
+  </tr>
+</table>
 </div>
-<div id='Viewer' style='text-align:center;'>
 
 <p><canvas id='Canvas' width='32' height='32'></canvas></p>
 
-</div>
+</td>
+</tr>
+</table>
 
 </body>
 </html>
