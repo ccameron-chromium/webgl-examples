@@ -1,0 +1,333 @@
+<html>
+<head>
+<script>
+
+let ln = function(x) { return Math.log(x) }
+let log2 = function(x) { return Math.log(x) / Math.log(2); }
+let exp2 = function(x) { return Math.exp(x * Math.log(2)); }
+let pow = function(x, y) { return Math.pow(x, y); }
+let clamp = function(x, a, b) {
+  return Math.min(Math.max(x, a), b);
+}
+let max = function(x, y) { return Math.max(x, y); }
+
+let vec2_dist = function(a, b) {
+  return (a.x - b.x)*(a.x - b.x) +
+         (a.y - b.y)*(a.y - b.y);
+}
+let vec2_copy = function(a) {
+  return {x:a.x, y:a.y};
+}
+let vec2_madd = function(s, a, b) {
+  return {x:s*a.x + b.x, y:s*a.y + b.y};
+}
+let vec2_add = function(a, b) {
+  return {x:a.x + b.x, y:a.y + b.y};
+}
+let vec2_sub = function(a, b) {
+  return {x:a.x - b.x, y:a.y - b.y};
+}
+let mat2_mul = function(A, p) {
+  return {
+    x:A.xx * p.x + A.xy * p.y,
+    y:A.yx * p.x + A.yy * p.y
+  }
+}
+let mat2_inv = function(A) {
+  let det = 1 / (A.xx * A.yy - A.xy * A.yx);
+  return {
+    xx: A.yy * det,
+    xy:-A.xy * det,
+    yx:-A.yx * det,
+    yy: A.xx * det
+  }
+}
+
+let pqToLinear = function(x) {
+  let c1 =  107.0 / 128.0;
+  let c2 = 2413.0 / 128.0;
+  let c3 = 2392.0 / 128.0;
+  let m1 = 1305.0 / 8192.0;
+  let m2 = 2523.0 / 32.0;
+  let p = pow(clamp(x, 0.0, 1.0), 1.0 / m2);
+  return pow(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+}
+
+let pqFromLinear = function(x) {
+  let c1 =  107.0 / 128.0;
+  let c2 = 2413.0 / 128.0;
+  let c3 = 2392.0 / 128.0;
+  let m1 = 1305.0 / 8192.0;
+  let m2 = 2523.0 / 32.0;
+  let v = pow(clamp(x, 0.0, 1.0), m1);
+  return pow((c1 + c2 * v) / (1.0 + c3 * v), m2);
+}
+
+let grid_x = [0, 1, 2, 4, 8];
+let grid_y = [0, 1, 2, 4, 8];
+
+let curve_model = [{x:1,    y:1,      m:0.0083}, 
+                   {x:1.25, y:1.044,  m:0.2915}, 
+                   {x:1.5,  y:1.1294, m:0.374},  
+                   {x:2,    y:1.3237, m:0.3916}, 
+                   {x:3,    y:1.6943, m:0.3476}, 
+                   {x:5,    y:2.3219, m:0.2887}];
+
+let view_offset = {x:10, y:400};
+let view_scale  = {x:100, y:-240};
+
+let modelToViewGrad = function(p) {
+  let f_x_dx = view_scale.x;
+  let f_x_dy = 0;
+  let f_y_dx = view_scale.y * exp2(-p.y);
+  let f_y_dy = view_scale.y * (-ln(2) * p.x) / exp2(p.y);
+  return {xx:f_x_dx, xy:f_x_dy, yx:f_y_dx, yy:f_y_dy};
+}
+
+let modelToView = function(p) {
+  let view_x = view_offset.x + view_scale.x * p.x;
+  let view_y = view_offset.y + view_scale.y * p.x * exp2(-p.y);
+
+  if (`m` in p) {
+    let d_xy = mat2_mul(modelToViewGrad(p), {x:1, y:p.m})
+    return {x:view_x, y:view_y, m:d_xy.y / d_xy.x};
+  }
+  return {x:view_x, y:view_y}
+}
+
+let viewToModel = function(p_view, p_model_guess) {
+  // Use Newton iteration to solve viewToModel(?) = p_view
+  for (let i = 0; i < 25; ++i) {
+    let p_view_guess = modelToView(p_model_guess);
+    let p_view_error = vec2_sub(p_view, p_view_guess);
+    let grad = modelToViewGrad(p_model_guess);
+    let grad_inv = mat2_inv(grad);
+    let step = mat2_mul(grad_inv, p_view_error);
+    p_model_guess = vec2_madd(1.0, step, p_model_guess);
+  }
+
+  let result = {x:p_model_guess.x, y:p_model_guess.y};
+  if (`m` in p_view) {
+    let grad = modelToViewGrad(p_model_guess);
+    let grad_inv = mat2_inv(grad);
+
+    let d_xy_view = {x:1, y:p_view.m};
+    let d_xy_model = mat2_mul(grad_inv, d_xy_view);
+    result.m = d_xy_model.y / d_xy_model.x;
+  }
+  return result;
+}
+
+let curve = curve_model.map(modelToView);
+
+
+
+let ctx = null;
+let drag = {index:null, m:false, loc:{x:0, y:0}};
+
+
+
+let evaluateCurve = function(x, xym, slope=false) {
+  const n = xym.length;
+  if (x <= xym[0].x) {
+    if (slope) { return 0; }
+    return xym[0].y;
+  }
+  if (x >= xym[n-1].x) {
+    if (slope) { return 0; }
+    return xym[n-1].y;
+  }
+  for (let i = 0; i < n - 1; ++i) {
+    if (x <= xym[i+1].x) {
+      let x0 = xym[i].x; let x1 = xym[i+1].x;
+      let y0 = xym[i].y; let y1 = xym[i+1].y;
+      let m0 = xym[i].m; let m1 = xym[i+1].m;
+      
+      // Normalize to the unit interval
+      const t = (x - x0) / (x1 - x0);
+      m0 *= (x1 - x0);
+      m1 *= (x1 - x0);
+ 
+      // Compute cubic coefficients and evaluate.
+      const c3 = (2.0*y0 + m0 - 2.0*y1 + m1);
+      const c2 = (-3.0*y0 + 3.0*y1 - 2.0*m0 - m1);
+      const c1 = m0;
+      const c0 = y0;
+      if (slope) {
+        let m = c1 + 2*c2*t + 3*c3*t*t;
+        m /= (x1 - x0);
+        return m;
+      }
+      return c0 + t*(c1 + t*(c2 + t*c3));
+    }
+  }
+}
+
+let drawControlPoint = function(xym, color) {
+  ctx.beginPath();
+  ctx.arc(xym.x, xym.y, 10, 0, 2 * Math.PI);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 0;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.lineWidth = 4;
+  ctx.moveTo(xym.x - 25, xym.y - 25*xym.m);
+  ctx.lineTo(xym.x + 25, xym.y + 25*xym.m);
+  ctx.stroke();
+}
+
+let drawGrid = function() {
+  for (let i = 0; i < grid_x.length; ++i) {
+    if (i == 0) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#000';
+    } else {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#0008';
+    }
+    ctx.beginPath();
+    ctx.moveTo(view_offset.x + view_scale.x * grid_x[i], 0);
+    ctx.lineTo(view_offset.x + view_scale.x * grid_x[i], CurveEditor.height);
+    ctx.stroke();
+  }
+  for (let i = 0; i < grid_y.length; ++i) {
+    if (i == 0) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#000';
+    } else {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#0008';
+    }
+    ctx.beginPath();
+    ctx.moveTo(0,                  view_offset.y + view_scale.y * grid_y[i]);
+    ctx.lineTo(CurveEditor.width,  view_offset.y + view_scale.y * grid_y[i]);
+    ctx.stroke();
+  }
+}
+
+let draw = function() {
+  ctx.clearRect(0, 0, CurveEditor.width, CurveEditor.height);
+
+  drawGrid();
+
+  ctx.beginPath();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'black';
+  for (let x = 0; x < 5; x += 0.001) {
+    let y = evaluateCurve(x, curve_model);
+    p = modelToView({x:x, y:y});
+    if (x == 0) {
+      ctx.moveTo(p.x, p.y);
+    } else {
+      ctx.lineTo(p.x, p.y);
+    }
+  }
+  ctx.stroke();
+  for (let i = 0; i < curve_model.length; ++i) {
+    xym = modelToView(curve_model[i])
+    drawControlPoint(xym, 'rgb(' + i + ', 128, 128)');
+  }
+}
+
+let getLocation = function(e) {
+  const rect = CurveEditor.getBoundingClientRect()
+  return {x:event.clientX - rect.left, y:event.clientY - rect.top};
+}
+
+let getControlPointIndex = function(view_point) {
+  let best_dist = null;
+  let best_index = null;
+  for (let i = 0; i < curve_model.length; ++i) {
+    let view_point_i = modelToView(curve_model[i]);
+    let dist = vec2_dist(view_point_i, view_point);
+    if (best_dist == null || dist < best_dist) {
+      best_index = i;
+      best_dist = dist;
+    }
+  }
+  if (best_dist > 12*12) {
+    return null;
+  }
+  return best_index;
+}
+
+let main = function() {
+  ctx = CurveEditor.getContext("2d");
+  CurveEditor.addEventListener('mousedown', function(e) {
+      let loc = getLocation(e);
+      drag.loc = loc;
+      drag.index = getControlPointIndex(loc);
+      drag.m = event.shiftKey;
+      console.log(drag.index);
+  });
+  CurveEditor.addEventListener('mouseup', function(e) {
+      drag.index = null;
+  });
+  CurveEditor.addEventListener('mouseleave', function(e) {
+      drag.index = null;
+  });
+  CurveEditor.addEventListener('mousemove', function(e) {
+      if (drag.index == null) {
+        return;
+      }
+      let loc_old = drag.loc;
+      let loc_new = getLocation(e);
+      drag.loc = loc_new;
+
+      let model_old = curve_model[drag.index];
+      console.log(model_old);
+      let view_old = modelToView(model_old);
+      let view_new = null;
+      if (drag.m) {
+        let view_m_delta = 0.1 * (loc_new.y - loc_old.y);
+        console.log(view_m_delta);
+        view_new = structuredClone(view_old);
+        view_new.m += view_m_delta;
+      } else {
+        let view_delta = vec2_sub(loc_new, loc_old);
+        view_new = vec2_add(view_old, view_delta);
+        view_new.m = view_old.m
+      }
+      if (view_new != view_old) {
+        let model_new = viewToModel(view_new, model_old);
+        view_new = modelToView(model_new);
+        curve_model[drag.index] = model_new;
+        draw();
+      }
+  });
+  CurveEditor.addEventListener('dblclick', function(e) {
+      let loc = getLocation(e);
+      let index = getControlPointIndex(loc);
+      drag.index = null;
+      if (index == null) {
+        let xym = {x:loc.x,
+                   y:evaluateCurve(loc.x, curve, false),
+                   m:evaluateCurve(loc.x, curve, true)};
+        let i = 0;
+        while (i < curve.length && curve[i].x < loc.x) {
+          ++i;
+        }
+        curve.splice(i, 0, xym);
+      } else {
+        if (curve.length > 1) {
+          curve.splice(index, 1);
+        }
+      }
+      draw();
+  });
+  draw();
+}
+</script>
+
+<html>
+<p>
+hi
+</p>
+
+<body onload="main()">
+<canvas id="CurveEditor" width=640 height=480 style="border:1px solid black;"></canvas>
+</body>
+</html>
