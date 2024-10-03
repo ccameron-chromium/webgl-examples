@@ -42,328 +42,369 @@ let mat2_inv = function(A) {
   }
 }
 
-let curve = [{x:1,    y:1,      m:0.0083}, 
-                   {x:1.25, y:1.044,  m:0.2915}, 
-                   {x:1.5,  y:1.1294, m:0.374},  
-                   {x:2,    y:1.3237, m:0.3916}, 
-                   {x:3,    y:1.6943, m:0.3476}, 
-                   {x:5,    y:2.3219, m:0.2887}];
-
-let view_offset = {x:10, y:470};
-let view_scale  = {x:100, y:-100};
-
-let modelToViewGrad = function(p) {
-  let f_x_dx = view_scale.x;
-  let f_x_dy = 0;
-  let f_y_dx = view_scale.y * exp2(-p.y);
-  let f_y_dy = view_scale.y * (-ln(2) * p.x) / exp2(p.y);
-  return {xx:f_x_dx, xy:f_x_dy, yx:f_y_dx, yy:f_y_dy};
-}
-
-let modelToView = function(p) {
-  let view_x = view_offset.x + view_scale.x * p.x;
-  let view_y = view_offset.y + view_scale.y * p.x * exp2(-p.y);
-
-  if (`m` in p) {
-    let d_xy = mat2_mul(modelToViewGrad(p), {x:1, y:p.m})
-    return {x:view_x, y:view_y, m:d_xy.y / d_xy.x};
+function PiecewiseCubic() {
+  this.control_points = [{x:1,    y:1,      m:0.0083}, 
+                         {x:1.25, y:1.044,  m:0.2915}, 
+                         {x:1.5,  y:1.1294, m:0.374},  
+                         {x:2,    y:1.3237, m:0.3916}, 
+                         {x:3,    y:1.6943, m:0.3476}, 
+                         {x:5,    y:2.3219, m:0.2887}];
+  this.getMaxX = function() {
+    return this.control_points[this.control_points.length-1].x;
   }
-  return {x:view_x, y:view_y}
-}
-
-let viewToModel = function(p_view, p_model_guess) {
-  // The x coordinate may be computed analytically.
-  let p_model = {x:(p_view.x - view_offset.x) / view_scale.x};
-
-  // Use Newton iteration to solve for the Y coordinate.
-  if (`y` in p_view) {
-    p_model.y = p_model_guess ? p_model_guess.y : 0;
-    for (let i = 0; i < 25; ++i) {
-      let p_view_guess = modelToView(p_model);
-      let p_view_error = vec2_sub(p_view, p_view_guess);
-      let grad = modelToViewGrad(p_model);
-      let grad_inv = mat2_inv(grad);
-      let step = mat2_mul(grad_inv, p_view_error);
-      step.x  = 0;
-      p_model = vec2_madd(1.0, step, p_model);
+  this.insert = function(x) {
+    let p = this.evaluate(x);
+    let i = 0;
+    while (this.control_points.length > i &&
+           this.control_points[i].x < p.x) {
+      ++i;
     }
+    this.control_points.splice(i, 0, p);
   }
-
-  // Solve the slope directly.
-  if (`m` in p_view) {
-    let grad = modelToViewGrad(p_model);
-    let grad_inv = mat2_inv(grad);
-
-    let d_xy_view = {x:1, y:p_view.m};
-    let d_xy_model = mat2_mul(grad_inv, d_xy_view);
-    p_model.m = d_xy_model.y / d_xy_model.x;
+  this.remove = function(index) {
+    if (index == null) {
+      return;
+    }
+    this.control_points.splice(index, 1);
   }
-
-  return p_model;
-}
-
-
-let ctx = null;
-let drag = {index:null, m:false, loc:{x:0, y:0}};
-
-
-
-let evaluateCurve = function(x, control_points) {
-  let result = {x:x};
-
-  const n = control_points.length;
-  if (x < control_points[0].x) {
-    result.y = control_points[0].y;
-    result.m = 0;
-    return result;
-  }
-  if (x > control_points[n-1].x) {
-    result.y = control_points[n-1].y;
-    result.m = 0;
-    return result;
-  }
-  for (let i = 0; i < n - 1; ++i) {
-    if (x <= control_points[i+1].x) {
-      let x0 = control_points[i].x; let x1 = control_points[i+1].x;
-      let y0 = control_points[i].y; let y1 = control_points[i+1].y;
-      let m0 = control_points[i].m; let m1 = control_points[i+1].m;
-      
-      // Normalize to the unit interval
-      const t = (x - x0) / (x1 - x0);
-      m0 *= (x1 - x0);
-      m1 *= (x1 - x0);
- 
-      // Compute cubic coefficients and evaluate.
-      const c3 = (2.0*y0 + m0 - 2.0*y1 + m1);
-      const c2 = (-3.0*y0 + 3.0*y1 - 2.0*m0 - m1);
-      const c1 = m0;
-      const c0 = y0;
-      result.y = c0 + t*(c1 + t*(c2 + t*c3));
-      result.m = (c1 + 2*c2*t + 3*c3*t*t) / (x1 - x0);
+  this.evaluate = function(x) {
+    let result = {x:x};
+    const n = this.control_points.length;
+    if (x < this.control_points[0].x) {
+      result.y = this.control_points[0].y;
+      result.m = 0;
       return result;
     }
-  }
-}
-
-let drawControlPoint = function(xym, color) {
-  ctx.beginPath();
-  ctx.arc(xym.x, xym.y, 10, 0, 2 * Math.PI);
-  ctx.fillStyle = color;
-  ctx.fill();
-  ctx.lineWidth = 0;
-  ctx.strokeStyle = color;
-  ctx.stroke();
-
-  ctx.beginPath();
-  ctx.lineWidth = 4;
-  ctx.moveTo(xym.x - 25, xym.y - 25*xym.m);
-  ctx.lineTo(xym.x + 25, xym.y + 25*xym.m);
-  ctx.stroke();
-}
-
-let drawGrid = function() {
-  for (let i = 0; i <= 50; ++i) {
-    let xy0 = {x:view_offset.x, y:view_offset.y};
-    if (i == 0) {
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#000';
-      ctx.setLineDash([]);
-      xy0.x = 0;
-      xy0.y = CurveEditor.height;
-    } else {
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = '#0008';
-      ctx.setLineDash([1, 3]);
+    if (x > this.control_points[n-1].x) {
+      result.y = this.control_points[n-1].y;
+      result.m = 0;
+      return result;
     }
-    if (i == 1 || i == 2 || i == 4 || i == 8 || i == 16 || i == 32) {
-      ctx.setLineDash([]);
-    }
-    ctx.beginPath();
-    ctx.moveTo(view_offset.x + view_scale.x * i, xy0.y);
-    ctx.lineTo(view_offset.x + view_scale.x * i, 0);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(xy0.x,              view_offset.y + view_scale.y * i);
-    ctx.lineTo(CurveEditor.width,  view_offset.y + view_scale.y * i);
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = '#0008';
-  ctx.beginPath();
-  ctx.moveTo(view_offset.x, view_offset.y);
-  ctx.lineTo(view_offset.x + view_scale.x * 50, view_offset.y + view_scale.y * 50);
-  ctx.stroke();
-}
-
-let draw = function() {
-  ctx.clearRect(0, 0, CurveEditor.width, CurveEditor.height);
-
-  drawGrid();
-
-  ctx.beginPath();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = 'black';
-  for (let x = 0; x < 1.1 * curve[curve.length-1].x; x += 0.001) {
-    let y = evaluateCurve(x, curve).y;
-    p = modelToView({x:x, y:y});
-    if (x == 0) {
-      ctx.moveTo(p.x, p.y);
-    } else {
-      ctx.lineTo(p.x, p.y);
+    for (let i = 0; i < n - 1; ++i) {
+      if (x <= this.control_points[i+1].x) {
+        let x0 = this.control_points[i].x; let x1 = this.control_points[i+1].x;
+        let y0 = this.control_points[i].y; let y1 = this.control_points[i+1].y;
+        let m0 = this.control_points[i].m; let m1 = this.control_points[i+1].m;
+        
+        // Normalize to the unit interval
+        const t = (x - x0) / (x1 - x0);
+        m0 *= (x1 - x0);
+        m1 *= (x1 - x0);
+   
+        // Compute cubic coefficients and evaluate.
+        const c3 = (2.0*y0 + m0 - 2.0*y1 + m1);
+        const c2 = (-3.0*y0 + 3.0*y1 - 2.0*m0 - m1);
+        const c1 = m0;
+        const c0 = y0;
+        result.y = c0 + t*(c1 + t*(c2 + t*c3));
+        result.m = (c1 + 2*c2*t + 3*c3*t*t) / (x1 - x0);
+        return result;
+      }
     }
   }
-  ctx.stroke();
-  for (let i = 0; i < curve.length; ++i) {
-    xym = modelToView(curve[i])
-    drawControlPoint(xym, 'rgb(' + i + ', 128, 128)');
+
+}
+
+
+function CurveViewer() {
+  this.curve = new PiecewiseCubic();
+  this.canvas = document.createElement('canvas');
+  this.canvas.width = '640';
+  this.canvas.height = '480';
+  this.canvas.style = style="border:1px solid black;";
+  this.canvas.addEventListener('mousedown', function(e) { viewer.mouseDown(e); });
+  this.canvas.addEventListener('mouseup', function(e) { viewer.mouseUpOrLeave(); });
+  this.canvas.addEventListener('mouseleave', function(e) { viewer.mouseUpOrLeave(); });
+  this.canvas.addEventListener('mousemove', function(e) { viewer.mouseMove(e); });
+  this.context = this.canvas.getContext("2d");
+
+  this.view_offset = {x:10,  y:this.canvas.height - 10};
+  this.view_scale  = {x:100, y:-100};
+
+  this.inputModes = [];
+  this.addRadioButton = function(parent, group_name, label) {
+    let inputElement = document.createElement('input');
+    inputElement.type = 'radio';
+    inputElement.name = group_name;
+    inputElement.value = label;
+    inputElement.id = group_name + '_' + label;
+
+    let labelElement = document.createElement('label');
+    labelElement.for = inputElement.id;
+    labelElement.textContent = label
+
+    parent.appendChild(inputElement);
+    parent.appendChild(labelElement);
+    return inputElement;
   }
-}
+  
+  
+  this.inputModes = document.createElement('p');
+  this.inputModeMoveXYM = this.addRadioButton(this.inputModes, "input_mode", "Move XY, Shift-M");
+  this.inputModeMoveYM  = this.addRadioButton(this.inputModes, "input_mode", "Move Y, Shift-M");
+  this.inputModeMoveM   = this.addRadioButton(this.inputModes, "input_mode", "Slope");
+  this.inputModeAdd     = this.addRadioButton(this.inputModes, "input_mode", "Add");
+  this.inputModeDelete  = this.addRadioButton(this.inputModes, "input_mode", "Remove");
+  this.inputModePanZoom = this.addRadioButton(this.inputModes, "input_mode", "Zoom, Shift-Pan");
+  this.inputModeMoveXYM.checked = true;
 
-let getViewPoint = function(e) {
-  const rect = CurveEditor.getBoundingClientRect()
-  return {x:event.clientX - rect.left, y:event.clientY - rect.top};
-}
+  this.div = document.createElement('div');
+  this.div.appendChild(this.inputModes);
+  this.div.appendChild(this.canvas);
 
-let getControlPointIndex = function(view_point) {
-  let best_dist = null;
-  let best_index = null;
-  for (let i = 0; i < curve.length; ++i) {
-    let view_point_i = modelToView(curve[i]);
-    let dist = vec2_dist(view_point_i, view_point);
-    if (best_dist == null || dist < best_dist) {
-      best_index = i;
-      best_dist = dist;
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Conversion from the model (gain this.curve) to the view (tone map this.curve).
+  this.modelToViewGrad = function(p) {
+    let f_x_dx = this.view_scale.x;
+    let f_x_dy = 0;
+    let f_y_dx = this.view_scale.y * exp2(-p.y);
+    let f_y_dy = this.view_scale.y * (-ln(2) * p.x) / exp2(p.y);
+    return {xx:f_x_dx, xy:f_x_dy, yx:f_y_dx, yy:f_y_dy};
+  }
+
+  this.modelToView = function(p) {
+    let view_x = this.view_offset.x + this.view_scale.x * p.x;
+    let view_y = this.view_offset.y + this.view_scale.y * p.x * exp2(-p.y);
+
+    if (`m` in p) {
+      let d_xy = mat2_mul(this.modelToViewGrad(p), {x:1, y:p.m})
+      return {x:view_x, y:view_y, m:d_xy.y / d_xy.x};
+    }
+    return {x:view_x, y:view_y}
+  }
+
+  this.viewToModel = function(p_view, p_model_guess) {
+    // The x coordinate may be computed analytically.
+    let p_model = {x:(p_view.x - this.view_offset.x) / this.view_scale.x};
+
+    // Use Newton iteration to solve for the Y coordinate.
+    if (`y` in p_view) {
+      p_model.y = p_model_guess ? p_model_guess.y : 0;
+      for (let i = 0; i < 25; ++i) {
+        let p_view_guess = this.modelToView(p_model);
+        let p_view_error = vec2_sub(p_view, p_view_guess);
+        let grad = this.modelToViewGrad(p_model);
+        let grad_inv = mat2_inv(grad);
+        let step = mat2_mul(grad_inv, p_view_error);
+        step.x  = 0;
+        p_model = vec2_madd(1.0, step, p_model);
+      }
+    }
+
+    // Solve the slope directly.
+    if (`m` in p_view) {
+      let grad = this.modelToViewGrad(p_model);
+      let grad_inv = mat2_inv(grad);
+
+      let d_xy_view = {x:1, y:p_view.m};
+      let d_xy_model = mat2_mul(grad_inv, d_xy_view);
+      p_model.m = d_xy_model.y / d_xy_model.x;
+    }
+
+    return p_model;
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Drawing functions.
+  this.drawGrid = function() {
+    for (let i = 0; i <= 50; ++i) {
+      let xy0 = {x:this.view_offset.x, y:this.view_offset.y};
+      if (i == 0) {
+        this.context.lineWidth = 2;
+        this.context.strokeStyle = '#000';
+        this.context.setLineDash([]);
+        xy0.x = 0;
+        xy0.y = this.canvas.height;
+      } else {
+        this.context.lineWidth = 1;
+        this.context.strokeStyle = '#0008';
+        this.context.setLineDash([1, 3]);
+      }
+      if (i == 1 || i == 2 || i == 4 || i == 8 || i == 16 || i == 32) {
+        this.context.setLineDash([]);
+      }
+      this.context.beginPath();
+      this.context.moveTo(this.view_offset.x + this.view_scale.x * i, xy0.y);
+      this.context.lineTo(this.view_offset.x + this.view_scale.x * i, 0);
+      this.context.stroke();
+
+      this.context.beginPath();
+      this.context.moveTo(xy0.x,              this.view_offset.y + this.view_scale.y * i);
+      this.context.lineTo(this.canvas.width,  this.view_offset.y + this.view_scale.y * i);
+      this.context.stroke();
+    }
+    this.context.setLineDash([]);
+
+    this.context.lineWidth = 1;
+    this.context.strokeStyle = '#0008';
+    this.context.beginPath();
+    this.context.moveTo(this.view_offset.x, this.view_offset.y);
+    this.context.lineTo(this.view_offset.x + this.view_scale.x * 50, this.view_offset.y + this.view_scale.y * 50);
+    this.context.stroke();
+  }
+  this.drawControlPoint = function(xym, color) {
+    this.context.beginPath();
+    this.context.arc(xym.x, xym.y, 8, 0, 2 * Math.PI);
+    this.context.fillStyle = color;
+    this.context.fill();
+    this.context.lineWidth = 0;
+    this.context.strokeStyle = color;
+    this.context.stroke();
+
+    this.context.beginPath();
+    this.context.lineWidth = 4;
+    this.context.moveTo(xym.x - 25, xym.y - 25*xym.m);
+    this.context.lineTo(xym.x + 25, xym.y + 25*xym.m);
+    this.context.stroke();
+  }
+  this.draw = function() {
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    this.drawGrid();
+
+    this.context.beginPath();
+    this.context.lineWidth = 2;
+    this.context.strokeStyle = 'black';
+    let y = 0;
+    for (let x = 0; x < 1.1 * this.curve.getMaxX(); x += 0.001) {
+      y = this.curve.evaluate(x).y;
+      p = this.modelToView({x:x, y:y});
+      if (x == 0) {
+        this.context.moveTo(p.x, p.y);
+      } else {
+        this.context.lineTo(p.x, p.y);
+      }
+    }
+    this.context.stroke();
+    for (let i = 0; i < this.curve.control_points.length; ++i) {
+      xym = this.modelToView(this.curve.control_points[i])
+      this.drawControlPoint(xym, 'rgb(' + i + ', 128, 128)');
     }
   }
-  if (best_dist > 12*12) {
-    return null;
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Event handling
+  this.getViewPoint = function(e) {
+    const rect = this.canvas.getBoundingClientRect()
+    return {x:event.clientX - rect.left, y:event.clientY - rect.top};
   }
-  return best_index;
+  this.getControlPointIndex = function(view_point) {
+    let best_dist = null;
+    let best_index = null;
+    for (let i = 0; i < this.curve.control_points.length; ++i) {
+      let view_point_i = this.modelToView(this.curve.control_points[i]);
+      let dist = vec2_dist(view_point_i, view_point);
+      if (best_dist == null || dist < best_dist) {
+        best_index = i;
+        best_dist = dist;
+      }
+    }
+    if (best_dist > 12*12) {
+      return null;
+    }
+    return best_index;
+  }
+  this.mouseDown = function(e) {
+    let view_point = this.getViewPoint(e);
+    let index = this.getControlPointIndex(view_point);
+    if (this.inputModeDelete.checked) {
+      this.curve.remove(index);
+    }
+    if (this.inputModeAdd.checked) {
+      let model_point = this.viewToModel({x:view_point.x});
+      this.curve.insert(model_point.x);
+    }
+    if (this.inputModeMoveXYM.checked ||
+        this.inputModeMoveYM.checked ||
+        this.inputModeMoveM.checked) {
+      this.drag_index = index;
+      this.drag_view_point = view_point;
+      return;
+    }
+    this.draw();
+  }
+  this.mouseMove = function(e) {
+    let view_delta = null;
+    {
+      let view_old = this.drag_view_point;
+      this.drag_view_point = this.getViewPoint(e);
+      if (!view_old) {
+        return;
+      }
+      view_delta = vec2_sub(this.drag_view_point, view_old);
+    }
+    if (e.buttons != 1) {
+      return;
+    }
+
+    if (this.inputModePanZoom.checked) {
+      console.log('pan-zoom');
+      if (!e.shiftKey) {
+        this.view_scale.x *= exp2( 0.01 * view_delta.x) *
+                             exp2(-0.01 * view_delta.y);
+
+        const rect = this.canvas.getBoundingClientRect()
+        this.view_scale.y = -this.view_scale.x;
+      } else {
+        this.view_offset.x += this.view_delta.x;
+        this.view_offset.y += this.view_delta.y;
+      }
+      this.draw();
+    }
+    if (this.inputModeMoveXYM.checked ||
+        this.inputModeMoveYM.checked ||
+        this.inputModeMoveM.checked) {
+      if (this.drag_index == null) {
+        return;
+      }
+      let model_old = this.curve.control_points[this.drag_index];
+      let view_old = this.modelToView(model_old);
+      let view_new = view_old;
+
+      if (this.inputModeMoveM.checked ||
+          (this.inputModeMoveYM.checked && e.shiftKey) ||
+          (this.inputModeMoveXYM.checked && e.shiftKey)) {
+        view_new = structuredClone(view_old);
+        view_new.m += 0.1 * view_delta.y;
+      } else {
+        view_new = vec2_add(view_old, view_delta);
+        if (this.inputModeMoveYM.checked) {
+          view_new.x = view_old.x;
+        }
+        view_new.m = view_old.m;
+      }
+      if (view_new != view_old) {
+        let model_new = this.viewToModel(view_new, model_old);
+        this.curve.control_points[this.drag_index] = model_new;
+        this.draw();
+      }
+    }
+  }
+  this.mouseUpOrLeave = function() {
+    this.drag_index = null;
+  }
 }
+
+let viewer = null;
+
 
 let main = function() {
-  ctx = CurveEditor.getContext("2d");
-  CurveEditor.addEventListener('mousedown', function(e) {
-      let view_point = getViewPoint(e);
-      let index = getControlPointIndex(view_point);
-      if (CurveEditorModeDelete.checked) {
-        if (index == null || curve.length == 1) {
-          return;
-        }
-        console.log('Delete!');
-        curve.splice(index, 1);
-        draw();
-        return;
-      }
-      if (CurveEditorModeAdd.checked) {
-        if (curve.length >= 16) {
-          return;
-        }
-        let model_point = viewToModel({x:view_point.x});
-        model_point = evaluateCurve(model_point.x, curve);
-        console.log(model_point);
-
-        let i = 0;
-        while (i < curve.length && curve[i].x < model_point.x) {
-          ++i;
-        }
-        curve.splice(i, 0, model_point);
-        draw();
-      }
-      if (CurveEditorModeMoveXYM.checked ||
-          CurveEditorModeMoveYM.checked ||
-          CurveEditorModeMoveM.checked) {
-        drag.index = index;
-        drag.view_point = view_point;
-        return;
-      }
-  });
-  CurveEditor.addEventListener('mouseup', function(e) {
-      drag.index = null;
-  });
-  CurveEditor.addEventListener('mouseleave', function(e) {
-      drag.index = null;
-  });
-  CurveEditor.addEventListener('mousemove', function(e) {
-      let view_delta = null;
-      {
-        let view_old = drag.view_point;
-        drag.view_point = getViewPoint(e);
-        if (!view_old) {
-          return;
-        }
-        view_delta = vec2_sub(drag.view_point, view_old);
-      }
-
-      if (e.buttons != 1) return;
-
-      if (CurveEditorModePanZoom.checked) {
-        if (!e.shiftKey) {
-          view_scale.x *= exp2( 0.01 * view_delta.x) *
-                          exp2(-0.01 * view_delta.y);
-
-          const rect = CurveEditor.getBoundingClientRect()
-          view_scale.y = -view_scale.x;
-        } else {
-          view_offset.x += view_delta.x;
-          view_offset.y += view_delta.y;
-        }
-        draw();
-      }
-
-      if (CurveEditorModeMoveXYM.checked ||
-          CurveEditorModeMoveYM.checked ||
-          CurveEditorModeMoveM.checked) {
-        if (drag.index == null) {
-          return;
-        }
-        let model_old = curve[drag.index];
-        let view_old = modelToView(model_old);
-        let view_new = view_old;
-
-        if (CurveEditorModeMoveM.checked ||
-            (CurveEditorModeMoveYM.checked && e.shiftKey) ||
-            (CurveEditorModeMoveXYM.checked && e.shiftKey)) {
-          view_new = structuredClone(view_old);
-          view_new.m += 0.1 * view_delta.y;
-        } else {
-          view_new = vec2_add(view_old, view_delta);
-          if (CurveEditorModeMoveYM.checked) {
-            view_new.x = view_old.x;
-          }
-          view_new.m = view_old.m;
-        }
-        if (view_new != view_old) {
-          let model_new = viewToModel(view_new, model_old);
-          curve[drag.index] = model_new;
-          draw();
-        }
-      }
-  });
-
-  draw();
+  viewer = new CurveViewer();
+  console.log(viewer);
+  viewer.draw();
+  document.body.appendChild(viewer.div);
 }
 </script>
 
 <html>
 
-<input type="radio" id="CurveEditorModeMoveXYM" name="curve_editor_mode" checked>
-<label for="CurveEditorModeMoveXYM">Move XY, &#x21E7M</label>
-<input type="radio" id="CurveEditorModeMoveYM" name="curve_editor_mode">
-<label for="CurveEditorModeMoveYM">Move Y, &#x21E7M</label>
-<input type="radio" id="CurveEditorModeMoveM" name="curve_editor_mode">
-<label for="CurveEditorModeMoveM">Slope</label>
-<input type="radio" id="CurveEditorModeAdd" name="curve_editor_mode">
-<label for="CurveEditorModeAdd">Add</label>
-<input type="radio" id="CurveEditorModeDelete" name="curve_editor_mode">
-<label for="CurveEditorModeDelete">Delete</label>
-<input type="radio" id="CurveEditorModePanZoom" name="curve_editor_mode">
-<label for="CurveEditorModePanZoom">Zoom, &#x21E7;Pan</label>
-
 <body onload="main()">
-<canvas id="CurveEditor" width=640 height=480 style="border:1px solid black;"></canvas>
+
+<div id="CurveDiv">
+<p id="Controls"> </p>
+</div>
+
 </body>
+
 </html>
