@@ -491,6 +491,7 @@ let compileShader = function(gl, vertex_source, fragment_source) {
 const gamut_common = `
   const int kXYZ = 0;
   const int kRec2020YUV = 7;
+  const int kRec2100PqYUV = 14;
   const int kSRGB = 1;
   const int kSRGBLinear = 2;
   const int kP3 = 9;
@@ -501,13 +502,23 @@ const gamut_common = `
   const int kOkHslabish = 11;
   const int kWavelength = 5;
   const int kSphere = 8;
+  const int kICtCpPq = 12;
+  const int kICtCpHlg = 13;
+
+  const int kToneMapModeICtCpPq = 0;
+  const int kToneMapModeYCrCb = 1;
+  const int kToneMapModeYRGB = 2;
+  const int kToneMapModeRpGpBp = 3;
+  const int kToneMapModeMaxRGB = 4;
 
   uniform sampler2D texture_xyzd50_lambda;
   uniform highp int input_position_type;
   uniform float input_hdr_headroom;
   uniform highp int output_position_type;
   uniform float tonemap_hdr_headroom;
+  uniform highp int tonemap_mode;
   uniform highp int sphere_position_type;
+  uniform float sdr_white_nits;
 
   mat3 p3_to_xyzd50 = mat3( 0.515102,  0.241182,  -0.00104941,
                             0.291965,  0.692236,   0.0418818,
@@ -546,6 +557,23 @@ const gamut_common = `
      0.39633779, -0.10556134, -0.08948418,
      0.21580376, -0.06385417, -1.29148554);
 
+  mat3 rec2020_to_ilms = mat3(
+       0.41210938,  0.16674805,  0.02416992,
+       0.52392578,  0.72045898,  0.07543945,
+       0.06396484,  0.11279297,  0.90039062);
+  mat3 ilms_to_rec2020 = mat3(
+       3.43660669, -0.79132956, -0.02594990,
+      -2.50645212,  1.98360045, -0.09891371,
+       0.06984542, -0.19227090,  1.12486361);
+  mat3 ilms_prime_to_ictcp_pq = mat3(
+       0.5,  1.61376953,  4.37817383,
+       0.5, -3.32348633, -4.24560547,
+       0.0,  1.70971680, -0.13256836);
+  mat3 ictcp_pq_to_ilms_prime = mat3(
+       1.0,         1.0,         1.0,
+       0.00860904, -0.00860904,  0.56003134,
+       0.11102963, -0.11102963, -0.32062717);
+
   // Y_rec2020 is the luminance vector in rec2020 primaries.
   vec3 rec2020_rgb_to_yuv(vec3 rgb) {
     mat4 rgb_to_yuv = mat4(
@@ -567,11 +595,13 @@ const gamut_common = `
   vec3 xyzd50_to_oklab(vec3 xyzd50) {
     vec3 lms = xyzd65_to_lms * xyzd50_to_xyzd65 * xyzd50;
     vec3 Lab = lms_to_oklab * (sign(lms) * pow(abs(lms), vec3(1.0/3.0)));
-    return Lab + vec3(0.0, 0.5, 0.5);
+    Lab += vec3(0.0, 0.5, 0.5);
+    return Lab;
   }
 
   vec3 oklab_to_xyzd50(vec3 Lab) {
-    vec3 x = oklab_to_lms * (Lab - vec3(0.0, 0.5, 0.5));
+    Lab -= vec3(0.0, 0.5, 0.5);
+    vec3 x = oklab_to_lms * Lab;
     vec3 lms = sign(x) * pow(abs(x), vec3(3.0));
     return xyzd65_to_xyzd50 * lms_to_xyzd65 * lms;
   }
@@ -654,6 +684,24 @@ const gamut_common = `
     }
     return sgn_x * (pow(a * abs_x + b, g) + e);
   }
+  float pqToLinear(float v) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float p = pow(clamp(v, 0.0, 1.0), 1.0 / m2);
+    return pow(max(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1);
+  }
+  float linearToPq(float L) {
+    float c1 =  107.0 / 128.0;
+    float c2 = 2413.0 / 128.0;
+    float c3 = 2392.0 / 128.0;
+    float m1 = 1305.0 / 8192.0;
+    float m2 = 2523.0 / 32.0;
+    float v = pow(clamp(L, 0.0, 1.0), m1);
+    return pow((c1 + c2 * v) / (1.0 + c3 * v), m2);
+  }
   float srgbToLinear(float x) {
     const float a = 0.947867345704;
     const float b = 0.052132654296;
@@ -669,6 +717,13 @@ const gamut_common = `
     const float e = -0.05499994754780801;
     const float g = 0.4166666666666667;
     return parametricEval(x, a, 0.0, c, d, e, 0.0, g);
+  }
+
+  vec3 pqToLinear(vec3 c) {
+    return vec3(pqToLinear(c.r), pqToLinear(c.g), pqToLinear(c.b));
+  }
+  vec3 linearToPq(vec3 c) {
+    return vec3(linearToPq(c.r), linearToPq(c.g), linearToPq(c.b));
   }
   vec3 srgbToLinear(vec3 c) {
     return vec3(srgbToLinear(c.r), srgbToLinear(c.g), srgbToLinear(c.b));
@@ -697,19 +752,34 @@ const gamut_common = `
     return (sqrt(4.0*a*Ytm + pow(b*Ytm-1.0, 2.0)) + b*Ytm-1.0) / (2.0*a*Ytm);
   }
 
-  vec3 convert(vec3 c, int from, float from_hdr_headroom, int to, float to_hdr_headroom) {
-    if (from == to && from_hdr_headroom == to_hdr_headroom) {
+  vec3 convert(vec3 c, int from, int to) {
+    if (from == to) {
       return c;
     }
 
     // Convert YUV to RGB.
-    if (from == kRec2020YUV) {
+    if (from == kRec2020YUV || from == kRec2100PqYUV) {
       c = rec2020_yuv_to_rgb(c);
     }
 
     // Convert nonlinear to linear.
     if (from == kSRGB || from == kP3 || from == kRec2020 || from == kRec2020YUV) {
-      c  = srgbToLinear(c);
+      c = srgbToLinear(c);
+    } else if (from == kRec2100PqYUV) {
+      c = pqToLinear(c);
+    }
+
+    // Convert ICtCp to Rec2020 linear.
+    if (from == kICtCpPq) {
+      c -= vec3(0.0, 0.5, 0.5);
+      c = ictcp_pq_to_ilms_prime * c;
+      c = pqToLinear(c);
+      c = ilms_to_rec2020 * c;
+    }
+
+    // Convert from normalized linear to extended linear.
+    if (from == kRec2100PqYUV || from == kICtCpPq) {
+      c *= 10000.0 / sdr_white_nits;
     }
 
     // Convert primaries to XYZD50
@@ -719,7 +789,8 @@ const gamut_common = `
     else if (from == kP3 || from == kP3Linear) {
       c = p3_to_xyzd50 * c;
     }
-    else if (from == kRec2020 || from == kRec2020Linear || from == kRec2020YUV) {
+    else if (from == kRec2020 || from == kRec2020Linear ||
+             from == kRec2020YUV || from == kRec2100PqYUV || from == kICtCpPq) {
       c = rec2020_to_xyzd50 * c;
     }
 
@@ -736,19 +807,6 @@ const gamut_common = `
 
     // c is now xyzd50
 
-    // Apply HDR headroom (and tonemapping) here.
-    {
-      vec3 kRec2020Y = vec3(0.262700, 0.678000, 0.059300);    
-      c *= from_hdr_headroom;
-      if (from_hdr_headroom > tonemap_hdr_headroom) {
-        c *= toneMapGain(dot(kRec2020Y, xyzd50_to_rec2020*c), from_hdr_headroom, tonemap_hdr_headroom);
-      }
-      if (to_hdr_headroom > tonemap_hdr_headroom) {
-        c *= toneMapInvGain(dot(kRec2020Y, xyzd50_to_rec2020*c), to_hdr_headroom, tonemap_hdr_headroom);
-      }
-      c /= to_hdr_headroom;
-    }
-
     // Direct-from-XYZD50 conversions.
     if (to == kOkLab || to == kOkHslabish) {
       c = xyzd50_to_oklab(c);
@@ -757,36 +815,99 @@ const gamut_common = `
       }
     }
 
-    // Convert primaries from XYZD50
-    {
-      if (to == kSRGB || to == kSRGBLinear) {
-        c = xyzd50_to_srgb * c;
-      } else if (to == kP3 || to == kP3Linear) {
-        c = xyzd50_to_p3 * c;
-      } else if (to == kRec2020 || to == kRec2020Linear || to == kRec2020YUV) {
-        c = xyzd50_to_rec2020 * c;
-      }
+    // Convert primaries from XYZD50 to sRGB, P3, or Rec2020.
+    if (to == kSRGB || to == kSRGBLinear) {
+      c = xyzd50_to_srgb * c;
+    } else if (to == kP3 || to == kP3Linear) {
+      c = xyzd50_to_p3 * c;
+    } else if (to == kRec2020 || to == kRec2020Linear ||
+               to == kRec2020YUV || to == kRec2100PqYUV || to == kICtCpPq) {
+      c = xyzd50_to_rec2020 * c;
+    }
+
+    // Convert from extended linear to normalized linear.
+    if (to == kRec2100PqYUV || to == kICtCpPq) {
+      c *= sdr_white_nits / 10000.0;
+    }
+
+    // Convert from Rec2020 linear to ICtCp.
+    if (to == kICtCpPq) {
+      c = rec2020_to_ilms * c;
+      c = linearToPq(c);
+      c = ilms_prime_to_ictcp_pq * c;
+      c += vec3(0.0, 0.5, 0.5);
     }
 
     // Convert linear to nonlinear.
     if (to == kSRGB || to == kP3 || to == kRec2020 || to == kRec2020YUV) {
       c  = linearToSrgb(c);
+    } else if (to == kRec2100PqYUV) {
+      c = linearToPq(c);
     }
 
     // Convert RGB to YUV.
-    if (to == kRec2020YUV) {
+    if (to == kRec2020YUV || to == kRec2100PqYUV) {
       c = rec2020_rgb_to_yuv(c);
     }
 
     return c;
   }
 
-  vec3 convert(vec3 c, int from, int to) {
-    return convert (c, from, 1.0, to, 1.0);
+  // Scale xyz up from [0, 1] to the specified content_hdr_headroom down to
+  // tonemap_hdr_headroom.
+  vec3 scaleAndToneMap(vec3 xyz, float content_hdr_headroom, float tonemap_hdr_headroom) {
+    xyz *= content_hdr_headroom;
+    if (content_hdr_headroom <= tonemap_hdr_headroom) {
+      return xyz;
+    }
+
+    if (tonemap_mode == kToneMapModeICtCpPq) {
+      // Convert to ICtCp, then remove the grey components, to get a just-grey color.
+      vec3 ictcp = convert(xyz, kXYZ, kICtCpPq);
+      float I1 = ictcp[0];
+
+      vec3 rec2020_grey = convert(vec3(I1, 0.5, 0.5), kICtCpPq, kRec2020Linear);
+      float grey = dot(rec2020_grey, vec3(1.0, 1.0, 1.0) / 3.0);
+      float gain = toneMapGain(grey, content_hdr_headroom, tonemap_hdr_headroom);
+      rec2020_grey *= gain;
+
+      vec3 ictcp_tm = convert(rec2020_grey, kRec2020Linear, kICtCpPq);
+      float I2 = ictcp_tm[0];
+      ictcp_tm.yz = min(I1 / I2, I2 / I1) * (ictcp.yz - vec2(0.5)) + vec2(0.5);
+      return convert(ictcp_tm, kICtCpPq, kXYZ);
+    } else if (tonemap_mode == kToneMapModeYCrCb) {
+      vec3 ycrcb = convert(xyz, kXYZ, kRec2100PqYUV);
+      float Y1 = ycrcb[0];
+
+      vec3 rec2020_grey = convert(vec3(Y1, 0.5, 0.5), kRec2100PqYUV, kRec2020Linear);
+      float grey = dot(rec2020_grey, vec3(1.0, 1.0, 1.0) / 3.0);
+      float gain = toneMapGain(grey, content_hdr_headroom, tonemap_hdr_headroom);
+      rec2020_grey *= gain;
+      
+      vec3 ycrcb_tm = convert(rec2020_grey, kRec2020Linear, kRec2100PqYUV);
+      float Y2 = ycrcb_tm[0];
+      ycrcb_tm.yz = min(Y1 / Y2, Y2 / Y1) * (ycrcb.yz - vec2(0.5)) + vec2(0.5);
+      return convert(ycrcb_tm, kRec2100PqYUV, kXYZ);
+    } else {
+      vec3 rec2020 = convert(xyz, kXYZ, kRec2020Linear);
+      vec3 gain = vec3(1.0);
+      if (tonemap_mode == kToneMapModeYRGB) {
+        float L = dot(vec3(0.262700, 0.678000, 0.059300), rec2020);
+        gain = vec3(toneMapGain(L, content_hdr_headroom, tonemap_hdr_headroom));
+      } else if (tonemap_mode == kToneMapModeRpGpBp) {
+        gain = vec3(toneMapGain(rec2020.r, content_hdr_headroom, tonemap_hdr_headroom),
+                    toneMapGain(rec2020.g, content_hdr_headroom, tonemap_hdr_headroom),
+                    toneMapGain(rec2020.b, content_hdr_headroom, tonemap_hdr_headroom));
+      } else if (tonemap_mode == kToneMapModeMaxRGB) {
+        float L = max(max(rec2020.r, rec2020.g), rec2020.b);
+        gain = vec3(toneMapGain(L, content_hdr_headroom, tonemap_hdr_headroom));
+      }
+      return convert(rec2020 * gain, kRec2020Linear, kXYZ);
+    }
   }
 
   bool inGamut(vec3 c, int from, int to, float headroom) {
-    vec3 converted = convert(c, from, 1.0, to, headroom);
+    vec3 converted = convert(c, from, to);
     return converted == clamp(converted, 0.0, 1.0);
   }
 
@@ -1016,18 +1137,114 @@ const black_fs = `
     }
     `;
 
-const kXYZ = 0;
-const kRec2020YUV = 7;
 const kSRGB = 1;
 const kSRGBLinear = 2;
 const kP3 = 9;
 const kP3Linear = 6;
 const kRec2020 = 10;
 const kRec2020Linear = 3;
+const kRec2020YUV = 7;
+const kRec2100PqYUV = 14;
 const kOkLab = 4;
 const kOkHslabish = 11;
+const kICtCpPq = 12;
+const kICtCpHlg = 13;
+const kXYZ = 0;
 const kWavelength = 5;
 const kSphere = 8;
+
+const kToneMapModeICtCpPq = 0;
+const kToneMapModeYCrCb = 1;
+const kToneMapModeYRGB = 2;
+const kToneMapModeRpGpBp = 3;
+const kToneMapModeMaxRGB = 4;
+
+let getToneMapMode = function() {
+  if (RadioToneMapMode_ICtCpPq.checked)
+    return kToneMapModeICtCpPq;
+  if (RadioToneMapMode_YCrCb.checked)
+    return kToneMapModeYCrCb;
+  if (RadioToneMapMode_YRGB.checked)
+    return kToneMapModeYRGB;
+  if (RadioToneMapMode_RpGpBp.checked)
+    return kToneMapModeRpGpBp;
+  if (RadioToneMapMode_MaxRGB.checked)
+    return kToneMapModeMaxRGB;
+  throw('unknown tone map mode');
+}
+
+let getGeometrySpace = function() {
+  if (RadioGeo_sRGB.checked)
+    return kSRGBLinear;
+  if (RadioGeo_P3.checked)
+    return kP3Linear;
+  if (RadioGeo_Rec2020.checked)
+    return kRec2020Linear;
+  if (RadioGeo_OkHslabish.checked)
+    return kOkHslabish;
+  if (RadioGeo_OkLab.checked)
+    return kOkLab;
+  if (RadioGeo_ICtCpPq.checked)
+    return kICtCpPq;
+  if (RadioGeo_XYZ.checked)
+    return kXYZ;
+  if (RadioGeo_Rec2020YUV.checked)
+    return kRec2020YUV;
+  if (RadioGeo_Rec2100PqYUV.checked)
+    return kRec2100PqYUV;
+  throw('unknown geometry space');
+}
+
+let isSpaceRGB = function(space) {
+  switch (space) {
+    case kXYZ:
+    case kSRGB:
+    case kSRGBLinear:
+    case kP3:
+    case kP3Linear:
+    case kRec2020:
+    case kRec2020Linear:
+      return true;
+    case kRec2020YUV:
+    case kRec2100PqYUV:
+    case kOkLab:
+    case kOkHslabish:
+    case kICtCpPq:
+    case kICtCpHlg:
+    case kWavelength:
+    case kSphere:
+      return false;
+  }
+  throw('unknown space');
+}
+
+let getSpaceAxes = function(space) {
+  switch (space) {
+    case kSRGB:
+    case kSRGBLinear:
+    case kP3:
+    case kP3Linear:
+    case kRec2020:
+    case kRec2020Linear:
+      return ['R', 'G', 'B'];
+    case kRec2020YUV:
+    case kRec2100PqYUV:
+      return ['Y', 'u', 'v'];
+    case kOkLab:
+      return ['L', 'a', 'b'];
+    case kOkHslabish:
+      return ['L', 'h', 's'];
+    case kICtCpPq:
+    case kICtCpHlg:
+      return ['I', 'Ct', 'Cp'];
+    case kXYZ:
+      return ['X', 'Y', 'Z'];
+    case kWavelength:
+    case kSphere:
+      throw('bad space for coordinates');
+  }
+  throw('unknown space');
+}
 
 let getGamutNumber = function(gamut) {
   switch (gamut) {
@@ -1071,25 +1288,32 @@ const gamut_vs = `#version 300 es
         float phi   = 2.0*3.141593*position.y;
         float theta = 2.0*3.141593*position.x;
 
-        v_xyzd50 = convert((matrixSubModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz, sphere_position_type, 1.0, kXYZ, 1.0);
+        v_xyzd50 = convert((matrixSubModel * vec4(0.0, 0.0, 0.0, 1.0)).xyz, sphere_position_type, kXYZ);
 
-        vec3 position_center = convert(v_xyzd50, kXYZ, 1.0, output_position_type, 1.0);
+        vec3 position_center = convert(v_xyzd50, kXYZ, output_position_type);
         v_normal = vec3(
            cos(phi),
            sin(theta) * sin(phi),
            cos(theta) * sin(phi));
         v_position = position_center + 0.03 * v_normal;
       } else {
-        vec3 in_color = (matrixSubModel * position).xyz;
-        v_xyzd50 = convert(in_color, input_position_type, input_hdr_headroom, kXYZ, 1.0);
-        v_position = convert(v_xyzd50, kXYZ, output_position_type);
-       
         // Use finite difference for normals because work is hard.
         vec4 epsilon = vec4(0.0, 0.0, 0.05, 0.0);
-        vec3 in_color_fd_normal = (matrixSubModel * (position + epsilon)).xyz;
-        vec3 out_color_fd_normal = convert(in_color_fd_normal, input_position_type, input_hdr_headroom, output_position_type, 1.0);
+
+        vec3 in_color = (matrixSubModel * position).xyz;
+        vec3 in_color_plus_epsilon = (matrixSubModel * (position + epsilon)).xyz;
+        vec3 xyzd50              = convert(in_color, input_position_type, kXYZ);
+        vec3 xyzd50_plus_epsilon = convert(in_color_plus_epsilon, input_position_type, kXYZ);
+
+        xyzd50              = scaleAndToneMap(xyzd50,              input_hdr_headroom, tonemap_hdr_headroom);
+        xyzd50_plus_epsilon = scaleAndToneMap(xyzd50_plus_epsilon, input_hdr_headroom, tonemap_hdr_headroom);
+
+        vec3 position              = convert(xyzd50,              kXYZ, output_position_type);
+        vec3 position_plus_epsilon = convert(xyzd50_plus_epsilon, kXYZ, output_position_type);
        
-        v_normal = normalize(out_color_fd_normal - v_position);
+        v_xyzd50 = xyzd50;
+        v_position = position;
+        v_normal = normalize(position_plus_epsilon - position);
       }
 
       gl_Position = matrixProjection * matrixModelView * vec4(v_position, 1.0);
@@ -1692,22 +1916,24 @@ let drawToFbo = function(width, height) {
     matrixProjection = matrixPerspective(view_fov, width / height, 2, 6);
     // matrixProjection = matrixOrtho2D(-width / height, width / height, -1.0, 1.0, -2.0, 2.0);
   }
+
+  let out_space = getGeometrySpace();
+
   {
     let matrices = []
     matrices.push(matrixTranslation(0, -0.1 * Math.max(CameraZ.value - 4), -CameraZ.value));
     matrices.push(matrixRotation('x', CameraPhi.value));
     matrices.push(matrixRotation('y', CameraTheta.value));
 
-    if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked || RadioGeo_OkHslabish.checked) {
-    } else {
+    if (isSpaceRGB(out_space)) {
       matrices.push(matrixRotation('x', 55));
       matrices.push(matrixRotation('y', -135));
     }
 
-    matrices.push([ 0, 1, 0, 0,
-                     -1,  0, 0, 0,
-                      0,  0, 1, 0,
-                      0,  0, 0, 1]);
+    matrices.push([ 0,  1, 0, 0,
+                   -1,  0, 0, 0,
+                    0,  0, 1, 0,
+                    0,  0, 0, 1]);
     matrices.push(matrixTranslation(-0.5, -0.5, -0.5));
     matrixModelView = matrixConcat(matrices);
   }
@@ -1718,40 +1944,15 @@ let drawToFbo = function(width, height) {
   moveElementToPoint(Axis1,     matrixModelViewProjection, [0, 1, 0, 1]);
   moveElementToPoint(Axis2,     matrixModelViewProjection, [0, 0, 1, 1]);
 
-  let out_space = kOkLab;
-  if (RadioGeo_sRGB.checked) {
-    Axis0.innerText = 'R'; Axis1.innerText = 'G'; Axis2.innerText = 'B';
-    out_space = kSRGBLinear;
-  }
-  if (RadioGeo_P3.checked) {
-    Axis0.innerText = 'R'; Axis1.innerText = 'G'; Axis2.innerText = 'B';
-    out_space = kP3Linear;
-  }
-  if (RadioGeo_Rec2020.checked) {
-    Axis0.innerText = 'R'; Axis1.innerText = 'G'; Axis2.innerText = 'B';
-    out_space = kRec2020Linear;
-  }
-  if (RadioGeo_OkLab.checked || RadioGeo_Rec2020YUV.checked || RadioGeo_OkHslabish.checked) {
+  let axes_labels = getSpaceAxes(out_space);
+  Axis0.innerText = axes_labels[0];
+  Axis1.innerText = axes_labels[1];
+  Axis2.innerText = axes_labels[2];
+  if (!isSpaceRGB(out_space)) {
     moveElementToPoint(AxisOrigin, matrixModelViewProjection, [-0.08, 0.5, 0.5, 1]);
     moveElementToPoint(Axis0,      matrixModelViewProjection, [1, 0.5, 0.5, 1]);
     moveElementToPoint(Axis1,      matrixModelViewProjection, [0, 1,   0.5, 1]);
     moveElementToPoint(Axis2,      matrixModelViewProjection, [0, 0.5,   1, 1]);
-    Axis0.innerText = 'L=1'; Axis1.innerText = 'a=0.5'; Axis2.innerText = 'b=0.5';
-  }
-
-  if (RadioGeo_OkHslabish.checked) {
-    out_space = kOkHslabish;
-  }
-  if (RadioGeo_OkLab.checked) {
-    out_space = kOkLab;
-  }
-  if (RadioGeo_XYZ.checked) {
-    Axis0.innerText = 'X'; Axis1.innerText = 'Y'; Axis2.innerText = 'Z';
-    out_space = kXYZ;
-  }
-  if (RadioGeo_Rec2020YUV.checked) {
-    Axis0.innerText = 'Y'; Axis1.innerText = 'U'; Axis2.innerText = 'V';
-    out_space = kRec2020YUV;
   }
 
   let gamut_space = kSRGB;
@@ -1771,6 +1972,8 @@ let drawToFbo = function(width, height) {
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'output_position_type'), out_space);
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_discard'), 0);
   gl.uniform1f(gl.getUniformLocation(gamut_program, 'tonemap_hdr_headroom'), DisplayHdrHeadroom.value);
+  gl.uniform1i(gl.getUniformLocation(gamut_program, 'tonemap_mode'), getToneMapMode());
+  gl.uniform1f(gl.getUniformLocation(gamut_program, 'sdr_white_nits'), SdrWhiteNits.value);
 
   let gamut_map_type = 0;
   if (RadioGamutMap_Clamp.checked) {
@@ -1791,7 +1994,7 @@ let drawToFbo = function(width, height) {
   gl.uniform1i(gl.getUniformLocation(gamut_program, 'gamut_map_type'), gamut_map_type);
 
   const draw_sdr_solid = GamutRender_Solid.checked || GamutRender_SdrSolid_HdrWireframe.checked;
-  const draw_hdr_solid = GamutRender_Solid.checked;
+  const draw_hdr_solid = GamutRender_Solid.checked || GamutRender_HdrSolid_SdrWireframe.checked;
 
   // Draw the gamut
   {
@@ -1976,13 +2179,22 @@ let drawToFbo = function(width, height) {
       }
     }
     if (hdr_wire_draw) {
-      let slice = !(GamutRender_Wireframe.checked || GamutRender_SdrSolid_HdrWireframe.checked);
+      gl.enable(gl.POLYGON_OFFSET_LINE);
+      gl.polygonOffset(-1, -1);
+
+      let slice = !(GamutRender_Wireframe.checked || GamutRender_SdrSolid_HdrWireframe.checked ||
+                    GamutRender_HdrSolid_SdrWireframe.checked);
       gl.uniform4fv(gl.getUniformLocation(gamut_program, 'slice_vector'),
                     slice ? flip_slice_vector : no_slice_vector);
 
       gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), ContentHdrHeadroom.value);
-      drawCube(gamut_program, kGrid1x1, 1.0);
+      if (GridHiRes.checked) {
+        drawCube(gamut_program, kGrid16x16, 1.0);
+      } else {
+        drawCube(gamut_program, kGrid1x1, 1.0);
+      }
       gl.uniform1f(gl.getUniformLocation(gamut_program, 'input_hdr_headroom'), 1.0);
+      gl.disable(gl.POLYGON_OFFSET_LINE);
     }
   }
 
@@ -2295,17 +2507,25 @@ Geometric coordinate color space<br>
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_Rec2020">
 <label for="RadioGeo_Rec2020">Rec2020</label>
 
-<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_OkLab" checked>
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_Rec2020YUV" checked>
+<label for="RadioGeo_Rec2020YUV">Rec2020 YUV</label>
+
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_Rec2100PqYUV">
+<label for="RadioGeo_Rec2100PqYUV">Rec2100 PQ-YUV</label>
+
+<br>
+
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_OkLab">
 <label for="RadioGeo_OkLab">OkLab</label>
+
+<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_ICtCpPq">
+<label for="RadioGeo_ICtCpPq">ICtCp-PQ</label>
 
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_OkHslabish">
 <label for="RadioGeo_OkHslabish">OkHsl-ish</label>
 
 <input type="radio" name="geo" onchange='onChange();' id="RadioGeo_XYZ">
 <label for="RadioGeo_XYZ">XYZD50</label>
-
-<input type="radio" name="geo" onchange='onChange();' id="RadioGeo_Rec2020YUV">
-<label for="RadioGeo_Rec2020YUV">Rec2020 YUV</label>
 </div>
 </p>
 
@@ -2368,12 +2588,31 @@ Camera:
 
 <div>
 <label for="ContentHdrHeadroom">Content HDR Headroom</label>
-<input id="ContentHdrHeadroom" type="range" min="1" max="5" step=0.01 value="1.0" oninput='onChange();' onchange='onChange();'/>
+<input id="ContentHdrHeadroom" type="range" min="1" max="10" step=0.1 value="1.0" oninput='onChange();' onchange='onChange();'/>
 <output id="ContentHdrHeadroomValue">1</output>
 <br>
 <label for="DisplayHdrHeadroom">Tonemap HDR Headroom</label>
-<input id="DisplayHdrHeadroom" type="range" min="1" max="5" step=0.01 value="5.0" oninput='onChange();' onchange='onChange();'/>
+<input id="DisplayHdrHeadroom" type="range" min="1" max="10" step=0.1 value="10.0" oninput='onChange();' onchange='onChange();'/>
 <output style='width:20px;' id="DisplayHdrHeadroomValue">5</output>
+<br>
+Tonemap Mode:
+<input type="radio" name="tone_map_mode" onchange='onChange();' id="RadioToneMapMode_ICtCpPq">
+<label for="RadioToneMapMode_ICtCpPq">ICtCp-Pq</label>
+
+<input type="radio" name="tone_map_mode" onchange='onChange();' id="RadioToneMapMode_YCrCb">
+<label for="RadioToneMapMode_YCrCb">Y'Cr'Cb'</label>
+
+<input type="radio" name="tone_map_mode" onchange='onChange();' id="RadioToneMapMode_YRGB">
+<label for="RadioToneMapMode_YRGB">YRGB</label>
+
+<input type="radio" name="tone_map_mode" onchange='onChange();' id="RadioToneMapMode_RpGpBp">
+<label for="RadioToneMapMode_RpGpBp">R'G'B'</label>
+
+<input type="radio" name="tone_map_mode" onchange='onChange();' id="RadioToneMapMode_MaxRGB" checked>
+<label for="RadioToneMapMode_MaxRGB">maxRGB</label>
+<br>
+<label for="SdrWhiteNits">SDR white nits (PQ)</label>
+<input id="SdrWhiteNits" type="number" value=203.0 min="1" max="10000" step= oninput='onChange();' onchange='onChange();'/>
 </div>
 </p>
 
@@ -2383,7 +2622,7 @@ Camera:
 <div>
 Slicing plane:
 <label for="SliceAxis">Axis</label>
-<input id="SliceAxis" type="number" min="0" max="3" value="0" onchange='onChange();'/>
+<input id="SliceAxis" type="number" min="0" max="2" value="1" onchange='onChange();'/>
 
 <label for="SliceValue">Value</label>
 <input id="SliceValue" type="range" min="0" max="1" step=0.001 value="0.5" oninput='onChange();' onchange='onChange();'/>
@@ -2428,21 +2667,28 @@ Gamut:
 <label for="GamutRender_Wireframe">Wire</label>
 
 <input type="radio" name="gamut" onchange='onChange();' id="GamutRender_SdrSolid_HdrWireframe" checked>
-<label for="GamutRender_SdrSolid_HdrWireframe">SDR (HDR wire)</label>
+<label for="GamutRender_SdrSolid_HdrWireframe">SDR</label>
+
+<input type="radio" name="gamut" onchange='onChange();' id="GamutRender_HdrSolid_SdrWireframe" checked>
+<label for="GamutRender_HdrSolid_SdrWireframe">HDR</label>
 
 <input type="radio" name="gamut" onchange='onChange();' id="GamutRender_Solid">
-<label for="GamutRender_Solid">HDR (and SDR)</label>
+<label for="GamutRender_Solid">Both</label>
+
+<input id="GridHiRes" type="checkbox" onchange='onChange();'/>
+<label for="GridHiRes">Hires</label>
+
 </div>
 
 <div>
 Gamut mapping:
-<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_None">
+<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_None" checked>
 <label for="RadioGamutMap_None">None</label>
 
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_CSS">
 <label for="RadioGamutMap_CSS">CSS</label>
 
-<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_CSS_OPT" checked>
+<input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_CSS_OPT">
 <label for="RadioGamutMap_CSS_OPT">CSS (opt)</label>
 
 <input type="radio" name="gamut_map" onchange='onChange();' id="RadioGamutMap_Clamp">
