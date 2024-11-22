@@ -1,0 +1,132 @@
+<html>
+<head>
+<script>
+var offscreenCanvas = null;
+var context = null;
+
+let parametricEval = function(x, a, b, c, d, e, f, g) {
+  const absX = Math.abs(x);
+  const sgnX = Math.sign(x);
+  return sgnX * (absX <= d) ? c*absX + f : Math.pow(a*absX + b, g) + e;
+}
+
+let srgbToLinear = function(x) {
+  return parametricEval(
+      x, 1/1.055, 0.055/1.055, 1/12.92, 0.04045, 0, 0, 2.4);
+}
+
+let linearToSrgb = function(x) {
+  return parametricEval(
+      x, Math.pow(1.055, 2.4), 0, 12.92, 0.04045 / 12.92, -0.055, 0, 1/2.4);
+}
+
+async function initGpuCanvas() {
+  // offscreenCanvas = GpuCanvas.transferControlToOffscreen();
+  offscreenCanvas = GpuCanvas;
+  context = offscreenCanvas.getContext('2d');
+  if (!context) {
+    console.error("Failed to initialize 2D context");
+    return;
+  }
+  offscreenCanvas.width = 8;
+  offscreenCanvas.height = 8;
+
+  drawGpuCanvas();
+}
+
+let updateImageRendering = function() {
+  GpuCanvas.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+}
+
+async function drawGpuCanvas() {
+  if (!context) {
+    return;
+  }
+  context.fillStyle = 'red';
+  context.fillRect( 0,  0, 4, 4);
+  context.fillStyle = 'green';
+  context.fillRect( 0, 4, 4, 4);
+  context.fillStyle = 'blue';
+  context.fillRect(4, 0, 4, 4);
+
+  let color = 'rgb(' + 
+      Math.round(100 * Number(PixelValueSlider.value)) + '%,' +
+      Math.round(100 * Number(PixelValueSlider.value)) + '%,' +
+      Math.round(100 * Number(PixelValueSlider.value)) + '%)';
+  console.log(color);
+  context.fillStyle = color;
+  context.fillRect(4,4,4, 4);
+}
+
+let updatePixelValue = function() {
+  // Update pixel value text.
+  PixelValue.innerHTML = Number(PixelValueSlider.value).toFixed(2);;
+  PixelValueLinear.innerHTML = srgbToLinear(PixelValueSlider.value).toFixed(2);
+  drawGpuCanvas();
+}
+
+function main() {
+  // Configure rendering slider.
+  PixelValueSlider.addEventListener('input', updatePixelValue, false);
+
+  initGpuCanvas();
+
+  // Update dynamic range query result.
+  DynamicRangeMatch.innerHTML = "(unsupported)";
+  if (window.matchMedia("(dynamic-range: standard)").matches) {
+    DynamicRangeMatch.innerHTML = "standard";
+  }
+  if (window.matchMedia("(dynamic-range: high)").matches) {
+    DynamicRangeMatch.innerHTML = "high";
+    DynamicRangeExplanation.hidden = true;
+  } else {
+    DynamicRangeExplanation.hidden = false;
+  }
+}
+</script>
+</head>
+
+<body onload='main()'>
+
+<h1>HDR support</h1>
+<p>The <tt>dynamic-range</tt> media query matches <tt id="DynamicRangeMatch">?</tt>.</p>
+
+<p id="DynamicRangeExplanation" hidden>This means that, on this display, setting the tone mapping mode to <tt>extended</tt> will have no effect (it will be the same as setting it to <tt>standard</tt>).</p>
+
+<p>
+This demo requires that "Experimental Web Platform features" be enabled in chrome://flags.
+</p>
+
+<h1>Rendering settings</h1>
+<p>
+  Pixel value:
+  <input id="PixelValueSlider" type="range" min="0" max="3" step="0.01" value="1" list="PixelValueSliderTicks""/>
+  <datalist id="PixelValueSliderTicks">
+    <option value="0" label="0"></option>
+    <option value="1" label="1"></option>
+    <option value="2" label="2"></option>
+    <option value="3" label="3"></option>
+  </datalist>
+  <tt id="PixelValue"></tt> (sRGB-encoded), <tt id="PixelValueLinear">?</tt> (linear-encoded)
+</p>
+
+
+<p>
+Tone map mode: 
+<input type="radio" name="ToneMapMode" id="ToneMapModeStandard" onchange="drawGpuCanvas();" checked=>
+<label for="ToneMapModeStandard"><tt>standard</tt></label>
+<input type="radio" name="ToneMapMode" id="ToneMapModeExtended" onchange="drawGpuCanvas();">
+<label for="ToneMapModeExtended"><tt>extended</tt></label>
+</p>
+<p>
+Image rendering:
+<input type="radio" name="ImageRendering" id="ImageRenderingAuto" onchange="updateImageRendering();" checked>
+<label for="ImageRenderingAuto"><tt>auto</tt></label>
+<input type="radio" name="ImageRendering" id="ImageRenderingPixelated" onchange="updateImageRendering();">
+<label for="ImageRenderingPixelated"><tt>pixelated</tt></label>
+</p>
+
+<h1>Canvas</h1>
+<canvas id="GpuCanvas" style="width:128px; height:128px; border:1px solid black;"></canvas>
+
+</html>
