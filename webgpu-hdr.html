@@ -1,192 +1,203 @@
 <html>
 <head>
 <script>
-var current_screen_details;
-var rendering_hdr_headroom = 1;
+var offscreenCanvas = null;
+var gpuDevice = null;
+var gpuContext = null;
 
-function onRenderingHdrHeadroomSliderChanged() {
-  rendering_hdr_headroom = Math.pow(2.0, RenderingHdrHeadroomSlider.value);
-  RenderingHdrHeadroomSliderLabel.innerText = 'Rendering HDR headroom: ' + rendering_hdr_headroom.toFixed(2);
-  drawWebGPUCanvas();
-  drawWebGLCanvas();
+let parametricEval = function(x, a, b, c, d, e, f, g) {
+  const absX = Math.abs(x);
+  const sgnX = Math.sign(x);
+  return sgnX * (absX <= d) ? c*absX + f : Math.pow(a*absX + b, g) + e;
 }
 
-function onCurrentScreenDetailsChanged() {
-  let screen_hdr_headroom = current_screen_details.highDynamicRangeHeadroom;
-  if (SetRenderingFromScreen.checked && screen_hdr_headroom) {
-    RenderingHdrHeadroomSlider.value = Math.log(screen_hdr_headroom) / Math.log(2.0);
-    onRenderingHdrHeadroomSliderChanged();
-  }
-  document.getElementById('DisplayValue').innerText =
-      'Screen HDR headroom: ' + screen_hdr_headroom.toFixed(2) + '.';
+let srgbToLinear = function(x) {
+  return parametricEval(
+      x, 1/1.055, 0.055/1.055, 1/12.92, 0.04045, 0, 0, 2.4);
 }
 
-// Clear the canvas to rendering_hdr_headroom using WebGPU.
-async function drawWebGPUCanvas() {
-  const canvas = document.getElementById('WebGPUCanvas');
+let linearToSrgb = function(x) {
+  return parametricEval(
+      x, Math.pow(1.055, 2.4), 0, 12.92, 0.04045 / 12.92, -0.055, 0, 1/2.4);
+}
+
+async function initGpuCanvas() {
   const adapter = await navigator.gpu?.requestAdapter();
-  const device = await adapter?.requestDevice();
-  const context = canvas.getContext('webgpu')
-  if (!device || !context) {
-    console.error("Failed to initialize WebGPU");
+  gpuDevice = await adapter?.requestDevice();
+  if (!gpuDevice) {
+    console.error("Failed to initialize WebGPU device");
     return;
   }
-  context.configure({
-    device: device,
-    format: 'rgba16float',
-    colorSpace: 'srgb-linear',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    hdrOptions: {mode:'extended'},
-  });
+  
+  offscreenCanvas = GpuCanvas.transferControlToOffscreen();
+  // offscreenCanvas = GpuCanvas;
+  gpuContext = offscreenCanvas.getContext('webgpu');
+  if (!gpuContext) {
+    console.error("Failed to initialize WebGPU context");
+    return;
+  }
+  offscreenCanvas.width = 32;
+  offscreenCanvas.height = 32;
 
-  let v = rendering_hdr_headroom;
-  const renderPassDescriptor = {
-    colorAttachments: [
-      {
-        view: context.getCurrentTexture().createView(),
-        clearValue: { r:v, g:v, b:v, a: 1.0 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      },
-    ],
-  };
-
-  const commandEncoder = device.createCommandEncoder();
-  const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
-  passEncoder.setViewport(0, 0, 32, 32, 0, 1);
-  passEncoder.end();
-  device.queue.submit([commandEncoder.finish()]);
+  drawGpuCanvas();
 }
 
-// Clear the canvas to rendering_hdr_headroom using WebGL.
-async function drawWebGLCanvas() {
-  const canvas = document.getElementById('WebGLCanvas');
-  const gl = canvas.getContext('webgl2')
-  if (!gl) {
-    console.error("Failed to initialize WebGL");
+let updateImageRendering = function() {
+  GpuCanvas.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+}
+
+async function drawGpuCanvas() {
+  if (!gpuContext) {
     return;
   }
-  if (`configureHighDynamicRange` in canvas) {
-    canvas.configureHighDynamicRange({ mode:'extended' });
+
+
+  // Select the pixel value to clear to from the slider.
+  let v = PixelValueSlider.value;
+
+  // Select the tone mapping mode based on the radio button.
+  let toneMappingMode = null;
+  if (ToneMapModeStandard.checked) {
+    toneMappingMode = "standard";
+  }
+  if (ToneMapModeExtended.checked) {
+    toneMappingMode = "extended";
   }
 
-  let ext = gl.getExtension('EXT_color_buffer_half_float');
-  gl.drawingBufferStorage(gl.RGBA16F, gl.drawingBufferWidth, gl.drawingBufferHeight);
-  gl.drawingBufferColorSpace = 'srgb-linear';
-
-  // Create the program to draw a point sprite.
-  let program = null;
+  // Configure and clear the canvas.
+  gpuContext.configure({
+    device: gpuDevice,
+    format: 'rgba16float',
+    colorSpace: 'srgb',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    toneMapping: {mode:toneMappingMode},
+  });
+  const commandEncoder = gpuDevice.createCommandEncoder();
   {
-    let compileShader = function(gl, vertCode, fragCode) {
-      let vertShader = gl.createShader(gl.VERTEX_SHADER);
-      gl.shaderSource(vertShader, vertCode);
-      gl.compileShader(vertShader);
-      if (!gl.getShaderParameter(vertShader, gl.COMPILE_STATUS))
-        throw new Error(gl.getShaderInfoLog(vertShader));
-         
-      let fragShader = gl.createShader(gl.FRAGMENT_SHADER);
-      gl.shaderSource(fragShader, fragCode); 
-      gl.compileShader(fragShader);
-      if (!gl.getShaderParameter(fragShader, gl.COMPILE_STATUS))
-        throw new Error(gl.getShaderInfoLog(fragShader));
-      
-      let shaderProgram = gl.createProgram();
-      gl.attachShader(shaderProgram, vertShader);
-      gl.attachShader(shaderProgram, fragShader);
-      gl.linkProgram(shaderProgram);
-      if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS))
-        throw new Error(gl.getProgramInfoLog(program));
-      return shaderProgram;
-    }
-    let vs = `attribute vec2 position;
-              void main() {
-                gl_Position = vec4(position, 0.0, 1.0);
-              }`;
-    let fs = `precision mediump float;
-              uniform float color;
-              void main() {
-                gl_FragColor = vec4(color, color, color, 1.0);
-              }`;
-    program = compileShader(gl, vs, fs);
+    const renderPassDescriptor = {
+      colorAttachments: [
+        {
+          view: gpuContext.getCurrentTexture().createView(),
+          clearValue: { r:v, g:v, b:v, a: 1.0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+    };
+    const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+
+    const pipeline = gpuDevice.createRenderPipeline({
+      layout: 'auto',
+      vertex: {
+        module: gpuDevice.createShaderModule({
+          code: `@vertex
+                 fn main(
+                   @builtin(vertex_index) VertexIndex : u32
+                 ) -> @builtin(position) vec4f {
+                   var pos = array<vec2f, 3>(
+                     vec2( 0,  1),
+                     vec2(-1, -1),
+                     vec2( 1, -1)
+                   );
+                   return vec4f(pos[VertexIndex], 0.0, 1.0);
+                 }`,
+        }),
+      },
+      fragment: {
+        module: gpuDevice.createShaderModule({
+          code: `@fragment
+                 fn main() -> @location(0) vec4f {
+                   return vec4(1.0, 0.0, 0.0, 1.0);
+                 }`,
+        }),
+        targets: [
+          {
+            format: 'rgba16float',
+          },
+        ],
+      },
+      primitive: {
+        topology: 'triangle-list',
+      },
+    });
+    passEncoder.setViewport(0, 0, 32, 32, 0, 1);
+    passEncoder.setPipeline(pipeline);
+    passEncoder.draw(3);
+    passEncoder.end();
   }
-  gl.useProgram(program);
 
-  // Draw using that program.
-  {
-    let vertices = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, 1,1, -1,1]), gl.STATIC_DRAW);
+  gpuDevice.queue.submit([commandEncoder.finish()]);
+}
 
-    let indices = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([0,1,2, 0,2,3]), gl.STATIC_DRAW);
-
-    let positionLocation = gl.getAttribLocation(program, 'position');
-    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(positionLocation);
-
-    gl.uniform1f(gl.getUniformLocation(program, 'color'), rendering_hdr_headroom);
-    gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
-  }
+let updatePixelValue = function() {
+  // Update pixel value text.
+  PixelValue.innerHTML = Number(PixelValueSlider.value).toFixed(2);;
+  PixelValueLinear.innerHTML = srgbToLinear(PixelValueSlider.value).toFixed(2);
+  drawGpuCanvas();
 }
 
 function main() {
-  // Configure screen information listener.
-  ButtonDetails.addEventListener('click', async function screenDetails() {
-    const screens = await window.getScreenDetails();
-    current_screen_details = screens.currentScreen;
-    onCurrentScreenDetailsChanged();
-    screens.addEventListener('currentscreenchange', (event) => {
-      current_screen_details = screens.currentScreen;
-      onCurrentScreenDetailsChanged();
-    });
-  })
-
   // Configure rendering slider.
-  RenderingHdrHeadroomSlider.addEventListener('input', onRenderingHdrHeadroomSliderChanged, false);
+  PixelValueSlider.addEventListener('input', updatePixelValue, false);
 
-  drawWebGPUCanvas();
-  drawWebGLCanvas();
+  initGpuCanvas();
+
+  // Update dynamic range query result.
+  DynamicRangeMatch.innerHTML = "(unsupported)";
+  if (window.matchMedia("(dynamic-range: standard)").matches) {
+    DynamicRangeMatch.innerHTML = "standard";
+  }
+  if (window.matchMedia("(dynamic-range: high)").matches) {
+    DynamicRangeMatch.innerHTML = "high";
+    DynamicRangeExplanation.hidden = true;
+  } else {
+    DynamicRangeExplanation.hidden = false;
+  }
 }
 </script>
 </head>
 
 <body onload='main()'>
 
-<h1>Screen details</h1>
-<p id="DisplayValue">Screen HDR headroom: (unknown)</p>
-<p><button type="button" id="ButtonDetails">Query screen HDR headroom</button></p>
+<h1>HDR support</h1>
+<p>The <tt>dynamic-range</tt> media query matches <tt id="DynamicRangeMatch">?</tt>.</p>
+
+<p id="DynamicRangeExplanation" hidden>This means that, on this display, setting the tone mapping mode to <tt>extended</tt> will have no effect (it will be the same as setting it to <tt>standard</tt>).</p>
+
+<p>
+This demo requires that "Experimental Web Platform features" be enabled in chrome://flags.
+</p>
 
 <h1>Rendering settings</h1>
 <p>
-<label id="RenderingHdrHeadroomSliderLabel" for="RenderingHdrHeadroomSlider">Rendering HDR headroom: 1.00</label>.
-<label id="SetRenderingFromScreenlabel" for="SetRenderingFromScreen">Set from screen:</label>
-<input type="checkbox" id="SetRenderingFromScreen" name="SetRenderingFromScreen" checked onclick="onCurrentScreenDetailsChanged();">
+  Pixel value:
+  <input id="PixelValueSlider" type="range" min="0" max="3" step="0.01" value="1" list="PixelValueSliderTicks""/>
+  <datalist id="PixelValueSliderTicks">
+    <option value="0" label="0"></option>
+    <option value="1" label="1"></option>
+    <option value="2" label="2"></option>
+    <option value="3" label="3"></option>
+  </datalist>
+  <tt id="PixelValue"></tt> (sRGB-encoded), <tt id="PixelValueLinear">?</tt> (linear-encoded)
 </p>
-<p><input id="RenderingHdrHeadroomSlider" type="range" min="-1" max="5" step="0.1" value="0" list="tickmarks""/></p>
-<datalist id="tickmarks">
-  <option value="-1"></option>
-  <option value="0"></option>
-  <option value="1"></option>
-  <option value="2"></option>
-  <option value="3"></option>
-  <option value="4"></option>
-</datalist>
-</body>
 
-<h1>WebGPU rendering</h1>
-<p>
-This requires that "Experimental Web Platform features" and "Unsafe WebGPU" be enabled in chrome://flags.
-</p>
-<p>
-WebGPU canvas that clears to HDR headroom: 
-</p>
-<canvas id="WebGPUCanvas" style="width:32px; height:32px; border:1px solid black;"></canvas>
 
-<h1>WebGL rendering</h1>
 <p>
-WebGL canvas that clears to HDR headroom: 
+Tone map mode: 
+<input type="radio" name="ToneMapMode" id="ToneMapModeStandard" onchange="drawGpuCanvas();" checked=>
+<label for="ToneMapModeStandard"><tt>standard</tt></label>
+<input type="radio" name="ToneMapMode" id="ToneMapModeExtended" onchange="drawGpuCanvas();">
+<label for="ToneMapModeExtended"><tt>extended</tt></label>
 </p>
-<canvas id="WebGLCanvas" style="width:32px; height:32px; border:1px solid black;"></canvas>
+<p>
+Image rendering:
+<input type="radio" name="ImageRendering" id="ImageRenderingAuto" onchange="updateImageRendering();">
+<label for="ImageRenderingAuto"><tt>auto</tt></label>
+<input type="radio" name="ImageRendering" id="ImageRenderingPixelated" onchange="updateImageRendering();" checked>
+<label for="ImageRenderingPixelated"><tt>pixelated</tt></label>
+</p>
+
+<h1>Canvas</h1>
+<canvas id="GpuCanvas" style="image-rendering:pixelated; width:128px; height:128px; border:1px solid black;"></canvas>
 
 </html>
