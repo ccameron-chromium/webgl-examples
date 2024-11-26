@@ -2,7 +2,12 @@
 <head>
 <script>
 var offscreenCanvas = null;
-var context = null;
+
+var canvas2DOffscreen = null;
+var canvas2DOnscreen = null;
+
+var contextOffscreen = null;
+var contextOnscreen = null;
 
 let parametricEval = function(x, a, b, c, d, e, f, g) {
   const absX = Math.abs(x);
@@ -20,25 +25,49 @@ let linearToSrgb = function(x) {
       x, Math.pow(1.055, 2.4), 0, 12.92, 0.04045 / 12.92, -0.055, 0, 1/2.4);
 }
 
-async function initGpuCanvas() {
-  // offscreenCanvas = GpuCanvas.transferControlToOffscreen();
-  offscreenCanvas = GpuCanvas;
-  context = offscreenCanvas.getContext('2d');
-  if (!context) {
-    console.error("Failed to initialize 2D context");
-    return;
-  }
-  offscreenCanvas.width = 8;
-  offscreenCanvas.height = 8;
+async function draw() {
+  canvasDraw2D(context2DOffscreen);
+  contextIBROffscreen.transferFromImageBitmap(canvas2DOffscreen.transferToImageBitmap());
 
-  drawGpuCanvas();
+  canvasDraw2D(context2DOffscreen);
+  contextIBROnscreen.transferFromImageBitmap(canvas2DOffscreen.transferToImageBitmap());
+
+  canvasDraw2D(context2DOffscreen);
+  canvasDraw2D(context2DOnscreen);
+}
+
+async function initGpuCanvas() {
+  canvas2DOffscreen = Canvas2DOffscreen.transferControlToOffscreen();
+  context2DOffscreen = canvas2DOffscreen.getContext('2d');
+  canvas2DOffscreen.width = 8;
+  canvas2DOffscreen.height = 8;
+
+  canvas2DOnscreen = Canvas2DOnscreen;
+  context2DOnscreen = canvas2DOnscreen.getContext('2d');
+  canvas2DOnscreen.width = 8;
+  canvas2DOnscreen.height = 8;
+
+  canvasIBROffscreen = CanvasIBROffscreen.transferControlToOffscreen();
+  contextIBROffscreen = canvasIBROffscreen.getContext('bitmaprenderer');
+  canvasIBROffscreen.width = 8;
+  canvasIBROffscreen.height = 8;
+
+  canvasIBROnscreen = CanvasIBROnscreen;
+  contextIBROnscreen = canvasIBROnscreen.getContext('bitmaprenderer');
+  canvasIBROnscreen.width = 8;
+  canvasIBROnscreen.height = 8;
+
+  draw();
 }
 
 let updateImageRendering = function() {
-  GpuCanvas.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+  Canvas2DOffscreen.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+  Canvas2DOnscreen.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+  CanvasIBROffscreen.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
+  CanvasIBROnscreen.style.imageRendering = ImageRenderingAuto.checked ? 'auto' : 'pixelated';
 }
 
-async function drawGpuCanvas() {
+async function canvasDraw2D(context) {
   if (!context) {
     return;
   }
@@ -62,7 +91,8 @@ let updatePixelValue = function() {
   // Update pixel value text.
   PixelValue.innerHTML = Number(PixelValueSlider.value).toFixed(2);;
   PixelValueLinear.innerHTML = srgbToLinear(PixelValueSlider.value).toFixed(2);
-  drawGpuCanvas();
+
+  draw();
 }
 
 function main() {
@@ -70,34 +100,15 @@ function main() {
   PixelValueSlider.addEventListener('input', updatePixelValue, false);
 
   initGpuCanvas();
-
-  // Update dynamic range query result.
-  DynamicRangeMatch.innerHTML = "(unsupported)";
-  if (window.matchMedia("(dynamic-range: standard)").matches) {
-    DynamicRangeMatch.innerHTML = "standard";
-  }
-  if (window.matchMedia("(dynamic-range: high)").matches) {
-    DynamicRangeMatch.innerHTML = "high";
-    DynamicRangeExplanation.hidden = true;
-  } else {
-    DynamicRangeExplanation.hidden = false;
-  }
 }
 </script>
 </head>
 
 <body onload='main()'>
 
-<h1>HDR support</h1>
-<p>The <tt>dynamic-range</tt> media query matches <tt id="DynamicRangeMatch">?</tt>.</p>
+<h1>Image rendering bugs</h1>
 
-<p id="DynamicRangeExplanation" hidden>This means that, on this display, setting the tone mapping mode to <tt>extended</tt> will have no effect (it will be the same as setting it to <tt>standard</tt>).</p>
-
-<p>
-This demo requires that "Experimental Web Platform features" be enabled in chrome://flags.
-</p>
-
-<h1>Rendering settings</h1>
+<h2>Rendering settings</h2>
 <p>
   Pixel value:
   <input id="PixelValueSlider" type="range" min="0" max="3" step="0.01" value="1" list="PixelValueSliderTicks""/>
@@ -110,14 +121,6 @@ This demo requires that "Experimental Web Platform features" be enabled in chrom
   <tt id="PixelValue"></tt> (sRGB-encoded), <tt id="PixelValueLinear">?</tt> (linear-encoded)
 </p>
 
-
-<p>
-Tone map mode: 
-<input type="radio" name="ToneMapMode" id="ToneMapModeStandard" onchange="drawGpuCanvas();" checked=>
-<label for="ToneMapModeStandard"><tt>standard</tt></label>
-<input type="radio" name="ToneMapMode" id="ToneMapModeExtended" onchange="drawGpuCanvas();">
-<label for="ToneMapModeExtended"><tt>extended</tt></label>
-</p>
 <p>
 Image rendering:
 <input type="radio" name="ImageRendering" id="ImageRenderingAuto" onchange="updateImageRendering();" checked>
@@ -126,7 +129,12 @@ Image rendering:
 <label for="ImageRenderingPixelated"><tt>pixelated</tt></label>
 </p>
 
-<h1>Canvas</h1>
-<canvas id="GpuCanvas" style="width:128px; height:128px; border:1px solid black;"></canvas>
+<h2>2D canvas (offscreen, onscreen)</h2>
+<canvas id="Canvas2DOffscreen" style="width:128px; height:128px; border:1px solid black;"></canvas>
+<canvas id="Canvas2DOnscreen" style="width:128px; height:128px; border:1px solid black;"></canvas>
+
+<h2>Image bitmap rendering canvas (offscreen, onscreen)</h2>
+<canvas id="CanvasIBROffscreen" style="width:128px; height:128px; border:1px solid black;"></canvas>
+<canvas id="CanvasIBROnscreen" style="width:128px; height:128px; border:1px solid black;"></canvas>
 
 </html>
