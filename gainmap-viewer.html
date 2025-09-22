@@ -19,6 +19,7 @@ var hdr_headroom = 0;
 var viewport_w;
 var viewport_h;
 var save_requested = false;
+var save_requested_pq = false;
 
 // Supported CICP values.
 const kPrimariesSRGB = 1;
@@ -67,8 +68,8 @@ let get_channel_param = function(name) {
   throw new Error('Channels must have length 1 or 3');
 }
 
-let pow2 = function(x) {
-  return Math.pow(x, 2);
+let exp2 = function(x) {
+  return Math.pow(2, x);
 }
 let log2 = function(x) {
   return Math.log(x) / Math.log(2);
@@ -383,6 +384,8 @@ const fs = `
       return;
     } 
     gl_FragColor.rgb = fromLinear(background_gain * c, drawingbuffer_transfer);
+    gl_FragColor.rgb = max(gl_FragColor.rgb, 0.0);
+    
   }`;
 
 let compileShader = function(gl, vertex_source, fragment_source) {
@@ -467,15 +470,13 @@ let setUniforms = function() {
         Number(GainMapMetadata_AlternatePrimaries.value));
   }
 
-  if (save_requested) {
+  if (save_requested && save_requested_pq) {
     gl.drawingBufferColorSpace = 'rec2100-pq';
     gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_primaries'), kPrimariesRec2020);
     gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_transfer'), kTransferPQ);
   } else {
-    if (gl.drawingBufferColorSpace != 'srgb') {
-      gl.drawingBufferColorSpace = 'srgb';
-    }
-    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_primaries'), kPrimariesSRGB);
+    gl.drawingBufferColorSpace = 'display-p3';
+    gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_primaries'), kPrimariesP3);
     gl.uniform1i(gl.getUniformLocation(program, 'drawingbuffer_transfer'), kTransferSRGB);
   }
 
@@ -489,7 +490,7 @@ let setUniforms = function() {
     gl.uniform1f(gl.getUniformLocation(program, 'weight'), weight);
   }
 
-  gl.uniform1f(gl.getUniformLocation(program, 'background_gain'), BackgroundGainSlider.value);
+  gl.uniform1f(gl.getUniformLocation(program, 'background_gain'), exp2(BackgroundGainSlider.value));
 }
 
 function drawQuad(flipY = false) {
@@ -609,6 +610,12 @@ let draw = function() {
     var mime_type = "image/png";
     var download_link = document.createElement('a');
     download_link.download = 'canvas.png';
+
+    if (!save_requested_pq) {
+      mime_type = "image/jpeg";
+      download_link.download = 'canvas.jpg';
+    }
+
     download_link.href = canvas.toDataURL(mime_type);
     download_link.dataset.downloadurl = [mime_type, download_link.download, download_link.href].join(':');
  
@@ -757,17 +764,18 @@ let loadGainmap = function(gainmap_json_url) {
 
 function onHdrToSdrSliderChanged() {
   hdr_headroom = Number(HdrToSdrSlider.value);
-  HdrToSdrSliderLabel.innerText = 'Rendering HDR to SDR ratio: ' + hdr_headroom.toFixed(2);
+  HdrToSdrSliderLabel.innerText = 'Rendering headroom: ' + hdr_headroom.toFixed(2);
   draw();
 }
 
 function onBackgroundGainSliderChanged() {
-  let background_gain = BackgroundGainSlider.value;
+  let background_gain = exp2(BackgroundGainSlider.value);
+  console.log(background_gain);
   let val = (255*linearToSrgb(background_gain)).toFixed();
 
   BackgroundGainSliderLabel.innerHTML =
       'Background: rgb(' + val + ')<br>' +
-      'Gain: 1/' + (1/background_gain).toFixed(2);
+      'Log Gain: ' + BackgroundGainSlider.value;
 
   document.body.style.backgroundColor = 'rgb(' +  val + ',' + val + ',' + val + ')';
   draw();
@@ -838,11 +846,16 @@ function main() {
     ButtonDetails.addEventListener('click', screenDetails);
   }
 
-  let saveCanvas = function() {
+  ButtonSavePQ.addEventListener('click', function() {
     save_requested = true;
+    save_requested_pq = true;
     draw();
-  }
-  ButtonSave.addEventListener('click', saveCanvas);
+  });
+  ButtonSaveSDR.addEventListener('click', function() {
+    save_requested = true;
+    save_requested_pq = false;
+    draw();
+  });
 
   ButtonComputeGainmap.addEventListener('click', computeGainmap);
   ButtonComputeAltr.addEventListener('click', computeAlternate);
@@ -918,7 +931,7 @@ Rendering mode:
 <tr>
 
 <td  style="text-align:center; width:300px;">
-  <p><label id="HdrToSdrSliderLabel" for="HdrToSdrSlider">Rendering HDR to SDR ratio: 1.00</label></p>
+  <p><label id="HdrToSdrSliderLabel" for="HdrToSdrSlider">Rendering headroom: 1.00</label></p>
   <p><input id="HdrToSdrSlider" type="range" min="0" max="5" step="0.1" value="0" list="tickmarks""/></p>
   <datalist id="tickmarks">
     <option value="0" label="0"></option>
@@ -946,9 +959,10 @@ Rendering mode:
 <td style="width:15px;"></td><td style="width:15px; border-left:1px solid black;"></td>
 
 <td  style="text-align:center; width:150px;">
-<p><label id="BackgroundGainSliderLabel" for="BackgroundGainSlider">Background gain: 1.00</label></p>
-<p><input id="BackgroundGainSlider" type="range" min="0" max="1" step="0.005" value="1"/></p>
-<p><button type="button" id="ButtonSave">Save Canvas</button></p>
+<p><label id="BackgroundGainSliderLabel" for="BackgroundGainSlider">Background gain: 0.00</label></p>
+<p><input id="BackgroundGainSlider" type="range" min="-4" max="0" step="0.01" value="0"/></p>
+<p><button type="button" id="ButtonSavePQ">Save (Rec2100 PQ)</button></p>
+<p><button type="button" id="ButtonSaveSDR">Save (Display P3)</button></p>
 </td>
 
 </tr>
