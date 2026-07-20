@@ -2,29 +2,73 @@
 <head>
 <script>
 let main = function() {
-  if (window.matchMedia("(color-gamut: srgb)").matches) {
-    Result.innerHTML += "color-gamut matches srgb<br>";
-  }
-  if (window.matchMedia("(color-gamut: p3)").matches) {
-    Result.innerHTML += "color-gamut matches p3<br>";
-  }
-  if (window.matchMedia("(color-gamut: rec2020)").matches) {
-    Result.innerHTML += "color-gamut matches rec2020<br>";
-  }
-
-  if (window.matchMedia("(dynamic-range: standard)").matches) {
-    Result.innerHTML += "dynamic-range matches standard<br>";
-  }
-  if (window.matchMedia("(dynamic-range: high)").matches) {
-    Result.innerHTML += "dynamic-range matches high<br>";
+  let updateGamut = function() {
+    let resultText = "";
+    if (window.matchMedia("(color-gamut: srgb)").matches) {
+      resultText += "color-gamut matches srgb<br>";
+    }
+    if (window.matchMedia("(color-gamut: p3)").matches) {
+      resultText += "<span style='color:green; font-weight:bold'>color-gamut matches p3</span><br>";
+    }
+    if (window.matchMedia("(color-gamut: rec2020)").matches) {
+      resultText += "<span style='color:green; font-weight:bold'>color-gamut matches rec2020</span><br>";
+    }
+    document.getElementById("gamut").innerHTML = resultText;
   }
 
-  Result.innerHTML += "window.screen.colorDepth: " + window.screen.colorDepth + "<br>";
-  Result.innerHTML += "window.screen.pixelDepth: " + window.screen.pixelDepth + "<br>";
+  let updateDynamicRange = function() {
+    let resultText = "";
+    if (window.matchMedia("(dynamic-range: standard)").matches) {
+      resultText += "dynamic-range matches standard<br>";
+    }
+    if (window.matchMedia("(dynamic-range: high)").matches) {
+      resultText += "<span style='color:green; font-weight:bold'>dynamic-range matches high</span><br>";
+    }
+    document.getElementById("dynamic-range").innerHTML = resultText;
+  }
+
+  let updateDepth = function() {
+    let resultText = "";
+    resultText += "window.screen.colorDepth: " + window.screen.colorDepth + "<br>";
+    resultText += "window.screen.pixelDepth: " + window.screen.pixelDepth + "<br>";
+    document.getElementById("colorDepth-and-pixelDepth").innerHTML = resultText;
+  }
+
+
+  const gamutQueries = [
+    "(color-gamut: srgb)",
+    "(color-gamut: p3)",
+    "(color-gamut: rec2020)",
+  ];
+  for (const q of gamutQueries) {
+    window.matchMedia(q).addEventListener("change", updateGamut);
+  }
+
+  const drQueries = [
+    "(dynamic-range: standard)",
+    "(dynamic-range: high)",
+  ];
+  for (const q of drQueries) {
+    window.matchMedia(q).addEventListener("change", updateDynamicRange);
+  }
+
+  if (window.screen.addEventListener) {
+    window.screen.addEventListener('change', updateDepth);
+  }
+
+  updateGamut();
+  updateDynamicRange();
+  updateDepth();
 }
 </script>
 </head>
 <body onload='main()'>
-<p id="Result"></p>   
+<h3>Color gamut:</h3>
+<p id="gamut"></p>   
+<h3>Dynamic range:</h3>
+<p id="dynamic-range"></p>   
+<h3>Color depth:</h3>
+<p>Note that these do not update automatically on all browsers, and may need a window refresh.</p>
+<p id="colorDepth-and-pixelDepth"></p>   
 </body>
 </html>
