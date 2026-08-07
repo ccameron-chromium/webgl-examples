@@ -1,9 +1,21 @@
 <html>
+<head>
+  <style>
+    video:hover {
+      filter: blur(0.25px);
+    }
+  </style>
+</head>
 <body>
-<h1>This is an PQ video!</h1>
+<h2>This is an PQ video!</h2>
+<p>
+When you hover over this video, a very narrow gaussian blur effect will be applied to it.
+This will result in the video falling out of overlay mode and being rendered by Chromium's compositor,
+whereupon it will exactly match the below PNG image.
+</p>
 <video autoplay loop src="staircase-pq.mp4" style="width:70%"></video>
 
-<h1>This is an PQ image!</h1>
+<h2>This is an PQ image!</h2>
 <img src="staircase-pq.png" style="width:70%"/>
 </body>
 </html>
