@@ -1,0 +1,53 @@
+<html>
+<head>
+</head>
+<body>
+<canvas id="TestPattern" width="1280" height="720"></canvas>
+<script>
+  const canvas = document.getElementById('TestPattern');
+  const ctx = canvas.getContext('2d', {
+    colorSpace: 'rec2100-pq',
+    pixelFormat: 'float16'
+  });
+
+  const values = [
+    { val: 1/203, label: "1 nit" },
+    { val: 5/203, label: "5 nits" },
+    { val: 0.2158605, label: "0x80/0xFF" },
+    { val: 80/203, label: "80 nits" },
+    { val: 100/203, label: "100 nits" },
+    { val: 203/203, label: "203 nits" },
+    { val: 500/203, label: "500 nits" },
+    { val: 1000/203, label: "1000 nits" }
+  ];
+
+  const rowHeight = canvas.height / 4;
+  const colWidth = canvas.width / values.length;
+
+  const rows = [
+    { name: 'Grey', color: (v) => `color(srgb-linear ${v} ${v} ${v})` },
+    { name: 'Red', color: (v) => `color(srgb-linear ${v} 0 0)` },
+    { name: 'Green', color: (v) => `color(srgb-linear 0 ${v} 0)` },
+    { name: 'Blue', color: (v) => `color(srgb-linear 0 0 ${v})` }
+  ];
+
+  ctx.font = '10px monospace';
+  ctx.textBaseline = 'top';
+
+  rows.forEach((row, rowIndex) => {
+    const y = rowIndex * rowHeight;
+    values.forEach((item, colIndex) => {
+      const x = colIndex * colWidth;
+      
+      // Draw rectangle
+      ctx.fillStyle = row.color(item.val);
+      ctx.fillRect(x, y, colWidth, rowHeight);
+
+      // Draw label
+      ctx.fillStyle = (colIndex < 2) ? 'white' : 'black';
+      ctx.fillText(item.label, x + 2, y + 2);
+    });
+  });
+</script>
+</body>
+</html>
